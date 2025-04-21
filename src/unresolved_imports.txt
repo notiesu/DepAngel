@@ -1,0 +1,2607 @@
+File: test/requests/src/requests/status_codes.py, Unresolved Keyword: LookupDict, Statement: from .structures import LookupDict
+File: test/requests/src/requests/structures.py, Unresolved Keyword: OrderedDict, Statement: from collections import OrderedDict
+File: test/requests/src/requests/structures.py, Unresolved Keyword: Mapping, Statement: from .compat import Mapping, MutableMapping
+File: test/requests/src/requests/structures.py, Unresolved Keyword: MutableMapping, Statement: from .compat import Mapping, MutableMapping
+File: test/requests/src/requests/compat.py, Unresolved Keyword: simplejson, Statement: from simplejson import JSONDecodeError
+File: test/requests/src/requests/compat.py, Unresolved Keyword: JSONDecodeError, Statement: from simplejson import JSONDecodeError
+File: test/requests/src/requests/compat.py, Unresolved Keyword: JSONDecodeError, Statement: from json import JSONDecodeError
+File: test/requests/src/requests/compat.py, Unresolved Keyword: OrderedDict, Statement: from collections import OrderedDict
+File: test/requests/src/requests/compat.py, Unresolved Keyword: collections.abc, Statement: from collections.abc import Callable, Mapping, MutableMapping
+File: test/requests/src/requests/compat.py, Unresolved Keyword: Callable, Statement: from collections.abc import Callable, Mapping, MutableMapping
+File: test/requests/src/requests/compat.py, Unresolved Keyword: Mapping, Statement: from collections.abc import Callable, Mapping, MutableMapping
+File: test/requests/src/requests/compat.py, Unresolved Keyword: MutableMapping, Statement: from collections.abc import Callable, Mapping, MutableMapping
+File: test/requests/src/requests/compat.py, Unresolved Keyword: http.cookies, Statement: from http.cookies import Morsel
+File: test/requests/src/requests/compat.py, Unresolved Keyword: Morsel, Statement: from http.cookies import Morsel
+File: test/requests/src/requests/compat.py, Unresolved Keyword: StringIO, Statement: from io import StringIO
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urllib.parse, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: quote, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: quote_plus, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: unquote, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: unquote_plus, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urldefrag, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urlencode, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urljoin, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urlparse, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urlsplit, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urlunparse, Statement: from urllib.parse import (
+    quote,
+    quote_plus,
+    unquote,
+    unquote_plus,
+    urldefrag,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunparse,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: urllib.request, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: getproxies, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: getproxies_environment, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: parse_http_list, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: proxy_bypass, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/src/requests/compat.py, Unresolved Keyword: proxy_bypass_environment, Statement: from urllib.request import (
+    getproxies,
+    getproxies_environment,
+    parse_http_list,
+    proxy_bypass,
+    proxy_bypass_environment,
+)
+File: test/requests/tests/test_help.py, Unresolved Keyword: requests.help, Statement: from requests.help import info
+File: test/requests/tests/test_help.py, Unresolved Keyword: info, Statement: from requests.help import info
+File: test/requests/src/requests/auth.py, Unresolved Keyword: b64encode, Statement: from base64 import b64encode
+File: test/requests/src/requests/auth.py, Unresolved Keyword: to_native_string, Statement: from ._internal_utils import to_native_string
+File: test/requests/src/requests/auth.py, Unresolved Keyword: basestring, Statement: from .compat import basestring, str, urlparse
+File: test/requests/src/requests/auth.py, Unresolved Keyword: str, Statement: from .compat import basestring, str, urlparse
+File: test/requests/src/requests/auth.py, Unresolved Keyword: urlparse, Statement: from .compat import basestring, str, urlparse
+File: test/requests/src/requests/auth.py, Unresolved Keyword: extract_cookies_to_jar, Statement: from .cookies import extract_cookies_to_jar
+File: test/requests/src/requests/auth.py, Unresolved Keyword: parse_dict_header, Statement: from .utils import parse_dict_header
+File: test/requests/src/requests/utils.py, Unresolved Keyword: OrderedDict, Statement: from collections import OrderedDict
+File: test/requests/src/requests/utils.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import make_headers, parse_url
+File: test/requests/src/requests/utils.py, Unresolved Keyword: make_headers, Statement: from urllib3.util import make_headers, parse_url
+File: test/requests/src/requests/utils.py, Unresolved Keyword: parse_url, Statement: from urllib3.util import make_headers, parse_url
+File: test/requests/src/requests/utils.py, Unresolved Keyword: _HEADER_VALIDATORS_BYTE, Statement: from ._internal_utils import (  # noqa: F401
+    _HEADER_VALIDATORS_BYTE,
+    _HEADER_VALIDATORS_STR,
+    HEADER_VALIDATORS,
+    to_native_string,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: _HEADER_VALIDATORS_STR, Statement: from ._internal_utils import (  # noqa: F401
+    _HEADER_VALIDATORS_BYTE,
+    _HEADER_VALIDATORS_STR,
+    HEADER_VALIDATORS,
+    to_native_string,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: HEADER_VALIDATORS, Statement: from ._internal_utils import (  # noqa: F401
+    _HEADER_VALIDATORS_BYTE,
+    _HEADER_VALIDATORS_STR,
+    HEADER_VALIDATORS,
+    to_native_string,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: to_native_string, Statement: from ._internal_utils import (  # noqa: F401
+    _HEADER_VALIDATORS_BYTE,
+    _HEADER_VALIDATORS_STR,
+    HEADER_VALIDATORS,
+    to_native_string,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: Mapping, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: basestring, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: bytes, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: getproxies, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: getproxies_environment, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: integer_types, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: is_urllib3_1, Statement: from .compat import (
+    Mapping,
+    basestring,
+    bytes,
+    getproxies,
+    getproxies_environment,
+    integer_types,
+    is_urllib3_1,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: proxy_bypass, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: proxy_bypass_environment, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: quote, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: str, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: unquote, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: urlparse, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: urlunparse, Statement: from .compat import (
+    proxy_bypass,
+    proxy_bypass_environment,
+    quote,
+    str,
+    unquote,
+    urlparse,
+    urlunparse,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: cookiejar_from_dict, Statement: from .cookies import cookiejar_from_dict
+File: test/requests/src/requests/utils.py, Unresolved Keyword: FileModeWarning, Statement: from .exceptions import (
+    FileModeWarning,
+    InvalidHeader,
+    InvalidURL,
+    UnrewindableBodyError,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: InvalidHeader, Statement: from .exceptions import (
+    FileModeWarning,
+    InvalidHeader,
+    InvalidURL,
+    UnrewindableBodyError,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: InvalidURL, Statement: from .exceptions import (
+    FileModeWarning,
+    InvalidHeader,
+    InvalidURL,
+    UnrewindableBodyError,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: UnrewindableBodyError, Statement: from .exceptions import (
+    FileModeWarning,
+    InvalidHeader,
+    InvalidURL,
+    UnrewindableBodyError,
+)
+File: test/requests/src/requests/utils.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from .structures import CaseInsensitiveDict
+File: test/requests/src/requests/utils.py, Unresolved Keyword: winreg, Statement: import winreg
+File: test/requests/src/requests/utils.py, Unresolved Keyword: NetrcParseError, Statement: from netrc import NetrcParseError, netrc
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: to_native_string, Statement: from ._internal_utils import to_native_string
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: Morsel, Statement: from .compat import Morsel, MutableMapping, cookielib, urlparse, urlunparse
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: MutableMapping, Statement: from .compat import Morsel, MutableMapping, cookielib, urlparse, urlunparse
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: cookielib, Statement: from .compat import Morsel, MutableMapping, cookielib, urlparse, urlunparse
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: urlparse, Statement: from .compat import Morsel, MutableMapping, cookielib, urlparse, urlunparse
+File: test/requests/src/requests/cookies.py, Unresolved Keyword: urlunparse, Statement: from .compat import Morsel, MutableMapping, cookielib, urlparse, urlunparse
+File: test/requests/src/requests/_internal_utils.py, Unresolved Keyword: builtin_str, Statement: from .compat import builtin_str
+File: test/requests/src/requests/exceptions.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import HTTPError as BaseHTTPError
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: RequestsDependencyWarning, Statement: from .exceptions import RequestsDependencyWarning
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: charset_normalizer, Statement: from charset_normalizer import __version__ as charset_normalizer_version
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: chardet, Statement: from chardet import __version__ as chardet_version
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: urllib3.contrib, Statement: from urllib3.contrib import pyopenssl
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: cryptography, Statement: from cryptography import __version__ as cryptography_version
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import DependencyWarning
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: DependencyWarning, Statement: from urllib3.exceptions import DependencyWarning
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: NullHandler, Statement: from logging import NullHandler
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __author__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __author_email__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __build__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __cake__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __copyright__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __description__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __license__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __title__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: __url__, Statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: delete, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: get, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: head, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: options, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: patch, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: post, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: put, Statement: from .api import delete, get, head, options, patch, post, put, request
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: ConnectionError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: ConnectTimeout, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: FileModeWarning, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: HTTPError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: JSONDecodeError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: ReadTimeout, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: RequestException, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: Timeout, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: TooManyRedirects, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: URLRequired, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: PreparedRequest, Statement: from .models import PreparedRequest, Request, Response
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: Request, Statement: from .models import PreparedRequest, Request, Response
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: Response, Statement: from .models import PreparedRequest, Request, Response
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: Session, Statement: from .sessions import Session, session
+File: test/requests/src/requests/__init__.py, Unresolved Keyword: codes, Statement: from .status_codes import codes
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: OrderedDict, Statement: from collections import OrderedDict
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: timedelta, Statement: from datetime import timedelta
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: to_native_string, Statement: from ._internal_utils import to_native_string
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: HTTPAdapter, Statement: from .adapters import HTTPAdapter
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: _basic_auth_str, Statement: from .auth import _basic_auth_str
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: Mapping, Statement: from .compat import Mapping, cookielib, urljoin, urlparse
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: cookielib, Statement: from .compat import Mapping, cookielib, urljoin, urlparse
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: urljoin, Statement: from .compat import Mapping, cookielib, urljoin, urlparse
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: urlparse, Statement: from .compat import Mapping, cookielib, urljoin, urlparse
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: RequestsCookieJar, Statement: from .cookies import (
+    RequestsCookieJar,
+    cookiejar_from_dict,
+    extract_cookies_to_jar,
+    merge_cookies,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: cookiejar_from_dict, Statement: from .cookies import (
+    RequestsCookieJar,
+    cookiejar_from_dict,
+    extract_cookies_to_jar,
+    merge_cookies,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: extract_cookies_to_jar, Statement: from .cookies import (
+    RequestsCookieJar,
+    cookiejar_from_dict,
+    extract_cookies_to_jar,
+    merge_cookies,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: merge_cookies, Statement: from .cookies import (
+    RequestsCookieJar,
+    cookiejar_from_dict,
+    extract_cookies_to_jar,
+    merge_cookies,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: ChunkedEncodingError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ContentDecodingError,
+    InvalidSchema,
+    TooManyRedirects,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: ContentDecodingError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ContentDecodingError,
+    InvalidSchema,
+    TooManyRedirects,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: InvalidSchema, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ContentDecodingError,
+    InvalidSchema,
+    TooManyRedirects,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: TooManyRedirects, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ContentDecodingError,
+    InvalidSchema,
+    TooManyRedirects,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: default_hooks, Statement: from .hooks import default_hooks, dispatch_hook
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: dispatch_hook, Statement: from .hooks import default_hooks, dispatch_hook
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: DEFAULT_REDIRECT_LIMIT, Statement: from .models import (  # noqa: F401
+    DEFAULT_REDIRECT_LIMIT,
+    REDIRECT_STATI,
+    PreparedRequest,
+    Request,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: REDIRECT_STATI, Statement: from .models import (  # noqa: F401
+    DEFAULT_REDIRECT_LIMIT,
+    REDIRECT_STATI,
+    PreparedRequest,
+    Request,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: PreparedRequest, Statement: from .models import (  # noqa: F401
+    DEFAULT_REDIRECT_LIMIT,
+    REDIRECT_STATI,
+    PreparedRequest,
+    Request,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: Request, Statement: from .models import (  # noqa: F401
+    DEFAULT_REDIRECT_LIMIT,
+    REDIRECT_STATI,
+    PreparedRequest,
+    Request,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: codes, Statement: from .status_codes import codes
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from .structures import CaseInsensitiveDict
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: DEFAULT_PORTS, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: default_headers, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: get_auth_from_url, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: get_environ_proxies, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: get_netrc_auth, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: requote_uri, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: resolve_proxies, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: rewind_body, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: should_bypass_proxies, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/sessions.py, Unresolved Keyword: to_key_val_list, Statement: from .utils import (  # noqa: F401
+    DEFAULT_PORTS,
+    default_headers,
+    get_auth_from_url,
+    get_environ_proxies,
+    get_netrc_auth,
+    requote_uri,
+    resolve_proxies,
+    rewind_body,
+    should_bypass_proxies,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: encodings.idna, Statement: import encodings.idna
+File: test/requests/src/requests/models.py, Unresolved Keyword: UnsupportedOperation, Statement: from io import UnsupportedOperation
+File: test/requests/src/requests/models.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: DecodeError, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: LocationParseError, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: ProtocolError, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: ReadTimeoutError, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: SSLError, Statement: from urllib3.exceptions import (
+    DecodeError,
+    LocationParseError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: urllib3.fields, Statement: from urllib3.fields import RequestField
+File: test/requests/src/requests/models.py, Unresolved Keyword: RequestField, Statement: from urllib3.fields import RequestField
+File: test/requests/src/requests/models.py, Unresolved Keyword: urllib3.filepost, Statement: from urllib3.filepost import encode_multipart_formdata
+File: test/requests/src/requests/models.py, Unresolved Keyword: encode_multipart_formdata, Statement: from urllib3.filepost import encode_multipart_formdata
+File: test/requests/src/requests/models.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import parse_url
+File: test/requests/src/requests/models.py, Unresolved Keyword: parse_url, Statement: from urllib3.util import parse_url
+File: test/requests/src/requests/models.py, Unresolved Keyword: to_native_string, Statement: from ._internal_utils import to_native_string, unicode_is_ascii
+File: test/requests/src/requests/models.py, Unresolved Keyword: unicode_is_ascii, Statement: from ._internal_utils import to_native_string, unicode_is_ascii
+File: test/requests/src/requests/models.py, Unresolved Keyword: HTTPBasicAuth, Statement: from .auth import HTTPBasicAuth
+File: test/requests/src/requests/models.py, Unresolved Keyword: Callable, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: JSONDecodeError, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: Mapping, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: basestring, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: builtin_str, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: chardet, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: cookielib, Statement: from .compat import (
+    Callable,
+    JSONDecodeError,
+    Mapping,
+    basestring,
+    builtin_str,
+    chardet,
+    cookielib,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: urlencode, Statement: from .compat import urlencode, urlsplit, urlunparse
+File: test/requests/src/requests/models.py, Unresolved Keyword: urlsplit, Statement: from .compat import urlencode, urlsplit, urlunparse
+File: test/requests/src/requests/models.py, Unresolved Keyword: urlunparse, Statement: from .compat import urlencode, urlsplit, urlunparse
+File: test/requests/src/requests/models.py, Unresolved Keyword: _copy_cookie_jar, Statement: from .cookies import _copy_cookie_jar, cookiejar_from_dict, get_cookie_header
+File: test/requests/src/requests/models.py, Unresolved Keyword: cookiejar_from_dict, Statement: from .cookies import _copy_cookie_jar, cookiejar_from_dict, get_cookie_header
+File: test/requests/src/requests/models.py, Unresolved Keyword: get_cookie_header, Statement: from .cookies import _copy_cookie_jar, cookiejar_from_dict, get_cookie_header
+File: test/requests/src/requests/models.py, Unresolved Keyword: ChunkedEncodingError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: ConnectionError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: ContentDecodingError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: HTTPError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: InvalidJSONError, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: InvalidURL, Statement: from .exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    HTTPError,
+    InvalidJSONError,
+    InvalidURL,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: MissingSchema, Statement: from .exceptions import MissingSchema
+File: test/requests/src/requests/models.py, Unresolved Keyword: StreamConsumedError, Statement: from .exceptions import StreamConsumedError
+File: test/requests/src/requests/models.py, Unresolved Keyword: default_hooks, Statement: from .hooks import default_hooks
+File: test/requests/src/requests/models.py, Unresolved Keyword: codes, Statement: from .status_codes import codes
+File: test/requests/src/requests/models.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from .structures import CaseInsensitiveDict
+File: test/requests/src/requests/models.py, Unresolved Keyword: check_header_validity, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: get_auth_from_url, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: guess_filename, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: guess_json_utf, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: iter_slices, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: parse_header_links, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: requote_uri, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: stream_decode_response_unicode, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: super_len, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/models.py, Unresolved Keyword: to_key_val_list, Statement: from .utils import (
+    check_header_validity,
+    get_auth_from_url,
+    guess_filename,
+    guess_json_utf,
+    iter_slices,
+    parse_header_links,
+    requote_uri,
+    stream_decode_response_unicode,
+    super_len,
+    to_key_val_list,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: os.path, Statement: import os.path
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import ClosedPoolError, ConnectTimeoutError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ClosedPoolError, Statement: from urllib3.exceptions import ClosedPoolError, ConnectTimeoutError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ConnectTimeoutError, Statement: from urllib3.exceptions import ClosedPoolError, ConnectTimeoutError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import HTTPError as _HTTPError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import InvalidHeader as _InvalidHeader
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import (
+    LocationValueError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: LocationValueError, Statement: from urllib3.exceptions import (
+    LocationValueError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: MaxRetryError, Statement: from urllib3.exceptions import (
+    LocationValueError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: NewConnectionError, Statement: from urllib3.exceptions import (
+    LocationValueError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ProtocolError, Statement: from urllib3.exceptions import (
+    LocationValueError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import ProxyError as _ProxyError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import ReadTimeoutError, ResponseError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ReadTimeoutError, Statement: from urllib3.exceptions import ReadTimeoutError, ResponseError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ResponseError, Statement: from urllib3.exceptions import ReadTimeoutError, ResponseError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import SSLError as _SSLError
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.poolmanager, Statement: from urllib3.poolmanager import PoolManager, proxy_from_url
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: PoolManager, Statement: from urllib3.poolmanager import PoolManager, proxy_from_url
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: proxy_from_url, Statement: from urllib3.poolmanager import PoolManager, proxy_from_url
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import Timeout as TimeoutSauce
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import parse_url
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: parse_url, Statement: from urllib3.util import parse_url
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.util.retry, Statement: from urllib3.util.retry import Retry
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: Retry, Statement: from urllib3.util.retry import Retry
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.util.ssl_, Statement: from urllib3.util.ssl_ import create_urllib3_context
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: create_urllib3_context, Statement: from urllib3.util.ssl_ import create_urllib3_context
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: _basic_auth_str, Statement: from .auth import _basic_auth_str
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: basestring, Statement: from .compat import basestring, urlparse
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urlparse, Statement: from .compat import basestring, urlparse
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: extract_cookies_to_jar, Statement: from .cookies import extract_cookies_to_jar
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ConnectionError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ConnectTimeout, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: InvalidHeader, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: InvalidProxyURL, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: InvalidSchema, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: InvalidURL, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ProxyError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: ReadTimeout, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: RetryError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: SSLError, Statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    ProxyError,
+    ReadTimeout,
+    RetryError,
+    SSLError,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: Response, Statement: from .models import Response
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from .structures import CaseInsensitiveDict
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: DEFAULT_CA_BUNDLE_PATH, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: extract_zipped_paths, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: get_auth_from_url, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: get_encoding_from_headers, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: prepend_scheme_if_needed, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: select_proxy, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urldefragauth, Statement: from .utils import (
+    DEFAULT_CA_BUNDLE_PATH,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    prepend_scheme_if_needed,
+    select_proxy,
+    urldefragauth,
+)
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: urllib3.contrib.socks, Statement: from urllib3.contrib.socks import SOCKSProxyManager
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: SOCKSProxyManager, Statement: from urllib3.contrib.socks import SOCKSProxyManager
+File: test/requests/src/requests/adapters.py, Unresolved Keyword: PreparedRequest, Statement: from .models import PreparedRequest
+File: test/requests/tests/__init__.py, Unresolved Keyword: urllib3.exceptions, Statement: from urllib3.exceptions import SNIMissingWarning
+File: test/requests/tests/__init__.py, Unresolved Keyword: SNIMissingWarning, Statement: from urllib3.exceptions import SNIMissingWarning
+File: test/requests/tests/conftest.py, Unresolved Keyword: http.server, Statement: from http.server import HTTPServer, SimpleHTTPRequestHandler
+File: test/requests/tests/conftest.py, Unresolved Keyword: HTTPServer, Statement: from http.server import HTTPServer, SimpleHTTPRequestHandler
+File: test/requests/tests/conftest.py, Unresolved Keyword: SimpleHTTPRequestHandler, Statement: from http.server import HTTPServer, SimpleHTTPRequestHandler
+File: test/requests/tests/conftest.py, Unresolved Keyword: BaseHTTPServer, Statement: from BaseHTTPServer import HTTPServer
+File: test/requests/tests/conftest.py, Unresolved Keyword: HTTPServer, Statement: from BaseHTTPServer import HTTPServer
+File: test/requests/tests/conftest.py, Unresolved Keyword: SimpleHTTPServer, Statement: from SimpleHTTPServer import SimpleHTTPRequestHandler
+File: test/requests/tests/conftest.py, Unresolved Keyword: SimpleHTTPRequestHandler, Statement: from SimpleHTTPServer import SimpleHTTPRequestHandler
+File: test/requests/tests/conftest.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/conftest.py, Unresolved Keyword: requests.compat, Statement: from requests.compat import urljoin
+File: test/requests/tests/conftest.py, Unresolved Keyword: urljoin, Statement: from requests.compat import urljoin
+File: test/requests/tests/conftest.py, Unresolved Keyword: trustme, Statement: import trustme
+File: test/requests/src/requests/certs.py, Unresolved Keyword: where, Statement: from certifi import where
+File: test/requests/tests/test_hooks.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/testserver/server.py, Unresolved Keyword: select, Statement: import select
+File: test/requests/tests/test_utils.py, Unresolved Keyword: deque, Statement: from collections import deque
+File: test/requests/tests/test_utils.py, Unresolved Keyword: BytesIO, Statement: from io import BytesIO
+File: test/requests/tests/test_utils.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/test_utils.py, Unresolved Keyword: requests._internal_utils, Statement: from requests._internal_utils import unicode_is_ascii
+File: test/requests/tests/test_utils.py, Unresolved Keyword: unicode_is_ascii, Statement: from requests._internal_utils import unicode_is_ascii
+File: test/requests/tests/test_utils.py, Unresolved Keyword: requests.cookies, Statement: from requests.cookies import RequestsCookieJar
+File: test/requests/tests/test_utils.py, Unresolved Keyword: RequestsCookieJar, Statement: from requests.cookies import RequestsCookieJar
+File: test/requests/tests/test_utils.py, Unresolved Keyword: requests.structures, Statement: from requests.structures import CaseInsensitiveDict
+File: test/requests/tests/test_utils.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from requests.structures import CaseInsensitiveDict
+File: test/requests/tests/test_utils.py, Unresolved Keyword: requests.utils, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: _parse_content_type_header, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: add_dict_to_cookiejar, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: address_in_network, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: dotted_netmask, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: extract_zipped_paths, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: get_auth_from_url, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: get_encoding_from_headers, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: get_encodings_from_content, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: get_environ_proxies, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: guess_filename, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: guess_json_utf, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: is_ipv4_address, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: is_valid_cidr, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: iter_slices, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: parse_dict_header, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: parse_header_links, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: prepend_scheme_if_needed, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: requote_uri, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: select_proxy, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: set_environ, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: should_bypass_proxies, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: super_len, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: to_key_val_list, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: to_native_string, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: unquote_header_value, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: unquote_unreserved, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: urldefragauth, Statement: from requests.utils import (
+    _parse_content_type_header,
+    add_dict_to_cookiejar,
+    address_in_network,
+    dotted_netmask,
+    extract_zipped_paths,
+    get_auth_from_url,
+    get_encoding_from_headers,
+    get_encodings_from_content,
+    get_environ_proxies,
+    guess_filename,
+    guess_json_utf,
+    is_ipv4_address,
+    is_valid_cidr,
+    iter_slices,
+    parse_dict_header,
+    parse_header_links,
+    prepend_scheme_if_needed,
+    requote_uri,
+    select_proxy,
+    set_environ,
+    should_bypass_proxies,
+    super_len,
+    to_key_val_list,
+    to_native_string,
+    unquote_header_value,
+    unquote_unreserved,
+    urldefragauth,
+)
+File: test/requests/tests/test_utils.py, Unresolved Keyword: StringIO, Statement: from .compat import StringIO, cStringIO
+File: test/requests/tests/test_utils.py, Unresolved Keyword: cStringIO, Statement: from .compat import StringIO, cStringIO
+File: test/requests/tests/test_utils.py, Unresolved Keyword: winreg, Statement: import winreg
+File: test/requests/tests/test_utils.py, Unresolved Keyword: winreg, Statement: import winreg
+File: test/requests/tests/test_utils.py, Unresolved Keyword: winreg, Statement: import winreg
+File: test/requests/tests/compat.py, Unresolved Keyword: StringIO, Statement: import StringIO
+File: test/requests/tests/compat.py, Unresolved Keyword: cStringIO, Statement: from cStringIO import StringIO as cStringIO
+File: test/requests/setup.py, Unresolved Keyword: open, Statement: from codecs import open
+File: test/requests/src/requests/help.py, Unresolved Keyword: charset_normalizer, Statement: import charset_normalizer
+File: test/requests/src/requests/help.py, Unresolved Keyword: chardet, Statement: import chardet
+File: test/requests/src/requests/help.py, Unresolved Keyword: urllib3.contrib, Statement: from urllib3.contrib import pyopenssl
+File: test/requests/src/requests/help.py, Unresolved Keyword: cryptography, Statement: import cryptography
+File: test/requests/src/requests/help.py, Unresolved Keyword: OpenSSL, Statement: import OpenSSL
+File: test/requests/tests/test_requests.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/test_requests.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import Timeout as Urllib3Timeout
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.adapters, Statement: from requests.adapters import HTTPAdapter
+File: test/requests/tests/test_requests.py, Unresolved Keyword: HTTPAdapter, Statement: from requests.adapters import HTTPAdapter
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.auth, Statement: from requests.auth import HTTPDigestAuth, _basic_auth_str
+File: test/requests/tests/test_requests.py, Unresolved Keyword: HTTPDigestAuth, Statement: from requests.auth import HTTPDigestAuth, _basic_auth_str
+File: test/requests/tests/test_requests.py, Unresolved Keyword: _basic_auth_str, Statement: from requests.auth import HTTPDigestAuth, _basic_auth_str
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.compat, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: JSONDecodeError, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: Morsel, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: MutableMapping, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: builtin_str, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: cookielib, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: getproxies, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: is_urllib3_1, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: urlparse, Statement: from requests.compat import (
+    JSONDecodeError,
+    Morsel,
+    MutableMapping,
+    builtin_str,
+    cookielib,
+    getproxies,
+    is_urllib3_1,
+    urlparse,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.cookies, Statement: from requests.cookies import cookiejar_from_dict, morsel_to_cookie
+File: test/requests/tests/test_requests.py, Unresolved Keyword: cookiejar_from_dict, Statement: from requests.cookies import cookiejar_from_dict, morsel_to_cookie
+File: test/requests/tests/test_requests.py, Unresolved Keyword: morsel_to_cookie, Statement: from requests.cookies import cookiejar_from_dict, morsel_to_cookie
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.exceptions, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ChunkedEncodingError, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ConnectionError, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ConnectTimeout, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ContentDecodingError, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: InvalidHeader, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: InvalidProxyURL, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: InvalidSchema, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: InvalidURL, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: MissingSchema, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ProxyError, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: ReadTimeout, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: RequestException, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: RetryError, Statement: from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ConnectTimeout,
+    ContentDecodingError,
+    InvalidHeader,
+    InvalidProxyURL,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    ProxyError,
+    ReadTimeout,
+    RequestException,
+    RetryError,
+)
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.exceptions, Statement: from requests.exceptions import SSLError as RequestsSSLError
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.exceptions, Statement: from requests.exceptions import Timeout, TooManyRedirects, UnrewindableBodyError
+File: test/requests/tests/test_requests.py, Unresolved Keyword: Timeout, Statement: from requests.exceptions import Timeout, TooManyRedirects, UnrewindableBodyError
+File: test/requests/tests/test_requests.py, Unresolved Keyword: TooManyRedirects, Statement: from requests.exceptions import Timeout, TooManyRedirects, UnrewindableBodyError
+File: test/requests/tests/test_requests.py, Unresolved Keyword: UnrewindableBodyError, Statement: from requests.exceptions import Timeout, TooManyRedirects, UnrewindableBodyError
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.hooks, Statement: from requests.hooks import default_hooks
+File: test/requests/tests/test_requests.py, Unresolved Keyword: default_hooks, Statement: from requests.hooks import default_hooks
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.models, Statement: from requests.models import PreparedRequest, urlencode
+File: test/requests/tests/test_requests.py, Unresolved Keyword: PreparedRequest, Statement: from requests.models import PreparedRequest, urlencode
+File: test/requests/tests/test_requests.py, Unresolved Keyword: urlencode, Statement: from requests.models import PreparedRequest, urlencode
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.sessions, Statement: from requests.sessions import SessionRedirectMixin
+File: test/requests/tests/test_requests.py, Unresolved Keyword: SessionRedirectMixin, Statement: from requests.sessions import SessionRedirectMixin
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.structures, Statement: from requests.structures import CaseInsensitiveDict
+File: test/requests/tests/test_requests.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from requests.structures import CaseInsensitiveDict
+File: test/requests/tests/test_requests.py, Unresolved Keyword: SNIMissingWarning, Statement: from . import SNIMissingWarning
+File: test/requests/tests/test_requests.py, Unresolved Keyword: StringIO, Statement: from .compat import StringIO
+File: test/requests/tests/test_requests.py, Unresolved Keyword: TLSServer, Statement: from .testserver.server import TLSServer, consume_socket_content
+File: test/requests/tests/test_requests.py, Unresolved Keyword: consume_socket_content, Statement: from .testserver.server import TLSServer, consume_socket_content
+File: test/requests/tests/test_requests.py, Unresolved Keyword: override_environ, Statement: from .utils import override_environ
+File: test/requests/tests/test_requests.py, Unresolved Keyword: SSLContext, Statement: from ssl import SSLContext
+File: test/requests/tests/test_requests.py, Unresolved Keyword: requests.packages.urllib3.poolmanager, Statement: from requests.packages.urllib3.poolmanager import PoolManager
+File: test/requests/tests/test_requests.py, Unresolved Keyword: PoolManager, Statement: from requests.packages.urllib3.poolmanager import PoolManager
+File: test/requests/tests/test_requests.py, Unresolved Keyword: urllib3.util, Statement: from urllib3.util import Retry
+File: test/requests/tests/test_requests.py, Unresolved Keyword: Retry, Statement: from urllib3.util import Retry
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: pygments.style, Statement: from pygments.style import Style
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Style, Statement: from pygments.style import Style
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: pygments.token, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Keyword, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Name, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Comment, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: String, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Error, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Number, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Operator, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Generic, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Whitespace, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Punctuation, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Other, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/docs/_themes/flask_theme_support.py, Unresolved Keyword: Literal, Statement: from pygments.token import Keyword, Name, Comment, String, Error, \
+     Number, Operator, Generic, Whitespace, Punctuation, Other, Literal
+File: test/requests/tests/test_adapters.py, Unresolved Keyword: requests.adapters, Statement: import requests.adapters
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: tests.testserver.server, Statement: from tests.testserver.server import Server, consume_socket_content
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: Server, Statement: from tests.testserver.server import Server, consume_socket_content
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: consume_socket_content, Statement: from tests.testserver.server import Server, consume_socket_content
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: requests.compat, Statement: from requests.compat import JSONDecodeError
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: JSONDecodeError, Statement: from requests.compat import JSONDecodeError
+File: test/requests/tests/test_lowlevel.py, Unresolved Keyword: override_environ, Statement: from .utils import override_environ
+File: test/requests/tests/test_testserver.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/test_testserver.py, Unresolved Keyword: tests.testserver.server, Statement: from tests.testserver.server import Server
+File: test/requests/tests/test_testserver.py, Unresolved Keyword: Server, Statement: from tests.testserver.server import Server
+File: test/requests/src/requests/packages.py, Unresolved Keyword: chardet, Statement: from .compat import chardet
+File: test/requests/tests/test_structures.py, Unresolved Keyword: pytest, Statement: import pytest
+File: test/requests/tests/test_structures.py, Unresolved Keyword: requests.structures, Statement: from requests.structures import CaseInsensitiveDict, LookupDict
+File: test/requests/tests/test_structures.py, Unresolved Keyword: CaseInsensitiveDict, Statement: from requests.structures import CaseInsensitiveDict, LookupDict
+File: test/requests/tests/test_structures.py, Unresolved Keyword: LookupDict, Statement: from requests.structures import CaseInsensitiveDict, LookupDict

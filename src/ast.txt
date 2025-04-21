@@ -1,0 +1,1473 @@
+module: #   __
+#  /__)  _  _     _   _ _/   _
+# / (   (- (/ (/ (- _)  /  _)
+#          /
+
+"""
+Requests HTTP Library
+~~~~~~~~~~~~~~~~~~~~~
+
+Requests is an HTTP library, written in Python, for human beings.
+Basic GET usage:
+
+   >>> import requests
+   >>> r = requests.get('https://www.python.org')
+   >>> r.status_code
+   200
+   >>> b'Python is a programming language' in r.content
+   True
+
+... or POST:
+
+   >>> payload = dict(key1='value1', key2='value2')
+   >>> r = requests.post('https://httpbin.org/post', data=payload)
+   >>> print(r.text)
+   {
+     ...
+     "form": {
+       "key1": "value1",
+       "key2": "value2"
+     },
+     ...
+   }
+
+The other HTTP methods are supported - see `requests.api`. Full documentation
+is at <https://requests.readthedocs.io>.
+
+:copyright: (c) 2017 by Kenneth Reitz.
+:license: Apache 2.0, see LICENSE for more details.
+"""
+
+import warnings
+
+import urllib3
+
+from .exceptions import RequestsDependencyWarning
+
+try:
+    from charset_normalizer import __version__ as charset_normalizer_version
+except ImportError:
+    charset_normalizer_version = None
+
+try:
+    from chardet import __version__ as chardet_version
+except ImportError:
+    chardet_version = None
+
+
+def check_compatibility(urllib3_version, chardet_version, charset_normalizer_version):
+    urllib3_version = urllib3_version.split(".")
+    assert urllib3_version != ["dev"]  # Verify urllib3 isn't installed from git.
+
+    # Sometimes, urllib3 only reports its version as 16.1.
+    if len(urllib3_version) == 2:
+        urllib3_version.append("0")
+
+    # Check urllib3 for compatibility.
+    major, minor, patch = urllib3_version  # noqa: F811
+    major, minor, patch = int(major), int(minor), int(patch)
+    # urllib3 >= 1.21.1
+    assert major >= 1
+    if major == 1:
+        assert minor >= 21
+
+    # Check charset_normalizer for compatibility.
+    if chardet_version:
+        major, minor, patch = chardet_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # chardet_version >= 3.0.2, < 6.0.0
+        assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+    elif charset_normalizer_version:
+        major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+    else:
+        warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+
+
+def _check_cryptography(cryptography_version):
+    # cryptography < 1.3.4
+    try:
+        cryptography_version = list(map(int, cryptography_version.split(".")))
+    except ValueError:
+        return
+
+    if cryptography_version < [1, 3, 4]:
+        warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        warnings.warn(warning, RequestsDependencyWarning)
+
+
+# Check imported dependencies for compatibility.
+try:
+    check_compatibility(
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+except (AssertionError, ValueError):
+    warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+
+# Attempt to enable urllib3's fallback for SNI support
+# if the standard library doesn't support SNI or the
+# 'ssl' library isn't available.
+try:
+    try:
+        import ssl
+    except ImportError:
+        ssl = None
+
+    if not getattr(ssl, "HAS_SNI", False):
+        from urllib3.contrib import pyopenssl
+
+        pyopenssl.inject_into_urllib3()
+
+        # Check cryptography version
+        from cryptography import __version__ as cryptography_version
+
+        _check_cryptography(cryptography_version)
+except ImportError:
+    pass
+
+# urllib3's DependencyWarnings should be silenced.
+from urllib3.exceptions import DependencyWarning
+
+warnings.simplefilter("ignore", DependencyWarning)
+
+# Set default logging handler to avoid "No handler found" warnings.
+import logging
+from logging import NullHandler
+
+from . import packages, utils
+from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+from .api import delete, get, head, options, patch, post, put, request
+from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+from .models import PreparedRequest, Request, Response
+from .sessions import Session, session
+from .status_codes import codes
+
+logging.getLogger(__name__).addHandler(NullHandler())
+
+# FileModeWarnings go off per the default.
+warnings.simplefilter("default", FileModeWarning, append=True)
+
+ comment: #   __
+ comment: #  /__)  _  _     _   _ _/   _
+ comment: # / (   (- (/ (/ (- _)  /  _)
+ comment: #          /
+ expression_statement: """
+Requests HTTP Library
+~~~~~~~~~~~~~~~~~~~~~
+
+Requests is an HTTP library, written in Python, for human beings.
+Basic GET usage:
+
+   >>> import requests
+   >>> r = requests.get('https://www.python.org')
+   >>> r.status_code
+   200
+   >>> b'Python is a programming language' in r.content
+   True
+
+... or POST:
+
+   >>> payload = dict(key1='value1', key2='value2')
+   >>> r = requests.post('https://httpbin.org/post', data=payload)
+   >>> print(r.text)
+   {
+     ...
+     "form": {
+       "key1": "value1",
+       "key2": "value2"
+     },
+     ...
+   }
+
+The other HTTP methods are supported - see `requests.api`. Full documentation
+is at <https://requests.readthedocs.io>.
+
+:copyright: (c) 2017 by Kenneth Reitz.
+:license: Apache 2.0, see LICENSE for more details.
+"""
+  string: """
+Requests HTTP Library
+~~~~~~~~~~~~~~~~~~~~~
+
+Requests is an HTTP library, written in Python, for human beings.
+Basic GET usage:
+
+   >>> import requests
+   >>> r = requests.get('https://www.python.org')
+   >>> r.status_code
+   200
+   >>> b'Python is a programming language' in r.content
+   True
+
+... or POST:
+
+   >>> payload = dict(key1='value1', key2='value2')
+   >>> r = requests.post('https://httpbin.org/post', data=payload)
+   >>> print(r.text)
+   {
+     ...
+     "form": {
+       "key1": "value1",
+       "key2": "value2"
+     },
+     ...
+   }
+
+The other HTTP methods are supported - see `requests.api`. Full documentation
+is at <https://requests.readthedocs.io>.
+
+:copyright: (c) 2017 by Kenneth Reitz.
+:license: Apache 2.0, see LICENSE for more details.
+"""
+   string_start: """
+   string_content: 
+Requests HTTP Library
+~~~~~~~~~~~~~~~~~~~~~
+
+Requests is an HTTP library, written in Python, for human beings.
+Basic GET usage:
+
+   >>> import requests
+   >>> r = requests.get('https://www.python.org')
+   >>> r.status_code
+   200
+   >>> b'Python is a programming language' in r.content
+   True
+
+... or POST:
+
+   >>> payload = dict(key1='value1', key2='value2')
+   >>> r = requests.post('https://httpbin.org/post', data=payload)
+   >>> print(r.text)
+   {
+     ...
+     "form": {
+       "key1": "value1",
+       "key2": "value2"
+     },
+     ...
+   }
+
+The other HTTP methods are supported - see `requests.api`. Full documentation
+is at <https://requests.readthedocs.io>.
+
+:copyright: (c) 2017 by Kenneth Reitz.
+:license: Apache 2.0, see LICENSE for more details.
+
+   string_end: """
+ import_statement: import warnings
+  import: import
+  dotted_name: warnings
+   identifier: warnings
+ import_statement: import urllib3
+  import: import
+  dotted_name: urllib3
+   identifier: urllib3
+ import_from_statement: from .exceptions import RequestsDependencyWarning
+  from: from
+  relative_import: .exceptions
+   import_prefix: .
+    .: .
+   dotted_name: exceptions
+    identifier: exceptions
+  import: import
+  dotted_name: RequestsDependencyWarning
+   identifier: RequestsDependencyWarning
+ try_statement: try:
+    from charset_normalizer import __version__ as charset_normalizer_version
+except ImportError:
+    charset_normalizer_version = None
+  try: try
+  :: :
+  block: from charset_normalizer import __version__ as charset_normalizer_version
+   import_from_statement: from charset_normalizer import __version__ as charset_normalizer_version
+    from: from
+    dotted_name: charset_normalizer
+     identifier: charset_normalizer
+    import: import
+    aliased_import: __version__ as charset_normalizer_version
+     dotted_name: __version__
+      identifier: __version__
+     as: as
+     identifier: charset_normalizer_version
+  except_clause: except ImportError:
+    charset_normalizer_version = None
+   except: except
+   identifier: ImportError
+   :: :
+   block: charset_normalizer_version = None
+    expression_statement: charset_normalizer_version = None
+     assignment: charset_normalizer_version = None
+      identifier: charset_normalizer_version
+      =: =
+      none: None
+ try_statement: try:
+    from chardet import __version__ as chardet_version
+except ImportError:
+    chardet_version = None
+  try: try
+  :: :
+  block: from chardet import __version__ as chardet_version
+   import_from_statement: from chardet import __version__ as chardet_version
+    from: from
+    dotted_name: chardet
+     identifier: chardet
+    import: import
+    aliased_import: __version__ as chardet_version
+     dotted_name: __version__
+      identifier: __version__
+     as: as
+     identifier: chardet_version
+  except_clause: except ImportError:
+    chardet_version = None
+   except: except
+   identifier: ImportError
+   :: :
+   block: chardet_version = None
+    expression_statement: chardet_version = None
+     assignment: chardet_version = None
+      identifier: chardet_version
+      =: =
+      none: None
+ function_definition: def check_compatibility(urllib3_version, chardet_version, charset_normalizer_version):
+    urllib3_version = urllib3_version.split(".")
+    assert urllib3_version != ["dev"]  # Verify urllib3 isn't installed from git.
+
+    # Sometimes, urllib3 only reports its version as 16.1.
+    if len(urllib3_version) == 2:
+        urllib3_version.append("0")
+
+    # Check urllib3 for compatibility.
+    major, minor, patch = urllib3_version  # noqa: F811
+    major, minor, patch = int(major), int(minor), int(patch)
+    # urllib3 >= 1.21.1
+    assert major >= 1
+    if major == 1:
+        assert minor >= 21
+
+    # Check charset_normalizer for compatibility.
+    if chardet_version:
+        major, minor, patch = chardet_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # chardet_version >= 3.0.2, < 6.0.0
+        assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+    elif charset_normalizer_version:
+        major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+    else:
+        warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+  def: def
+  identifier: check_compatibility
+  parameters: (urllib3_version, chardet_version, charset_normalizer_version)
+   (: (
+   identifier: urllib3_version
+   ,: ,
+   identifier: chardet_version
+   ,: ,
+   identifier: charset_normalizer_version
+   ): )
+  :: :
+  block: urllib3_version = urllib3_version.split(".")
+    assert urllib3_version != ["dev"]  # Verify urllib3 isn't installed from git.
+
+    # Sometimes, urllib3 only reports its version as 16.1.
+    if len(urllib3_version) == 2:
+        urllib3_version.append("0")
+
+    # Check urllib3 for compatibility.
+    major, minor, patch = urllib3_version  # noqa: F811
+    major, minor, patch = int(major), int(minor), int(patch)
+    # urllib3 >= 1.21.1
+    assert major >= 1
+    if major == 1:
+        assert minor >= 21
+
+    # Check charset_normalizer for compatibility.
+    if chardet_version:
+        major, minor, patch = chardet_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # chardet_version >= 3.0.2, < 6.0.0
+        assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+    elif charset_normalizer_version:
+        major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+    else:
+        warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+   expression_statement: urllib3_version = urllib3_version.split(".")
+    assignment: urllib3_version = urllib3_version.split(".")
+     identifier: urllib3_version
+     =: =
+     call: urllib3_version.split(".")
+      attribute: urllib3_version.split
+       identifier: urllib3_version
+       .: .
+       identifier: split
+      argument_list: (".")
+       (: (
+       string: "."
+        string_start: "
+        string_content: .
+        string_end: "
+       ): )
+   assert_statement: assert urllib3_version != ["dev"]
+    assert: assert
+    comparison_operator: urllib3_version != ["dev"]
+     identifier: urllib3_version
+     !=: !=
+     list: ["dev"]
+      [: [
+      string: "dev"
+       string_start: "
+       string_content: dev
+       string_end: "
+      ]: ]
+   comment: # Verify urllib3 isn't installed from git.
+   comment: # Sometimes, urllib3 only reports its version as 16.1.
+   if_statement: if len(urllib3_version) == 2:
+        urllib3_version.append("0")
+    if: if
+    comparison_operator: len(urllib3_version) == 2
+     call: len(urllib3_version)
+      identifier: len
+      argument_list: (urllib3_version)
+       (: (
+       identifier: urllib3_version
+       ): )
+     ==: ==
+     integer: 2
+    :: :
+    block: urllib3_version.append("0")
+     expression_statement: urllib3_version.append("0")
+      call: urllib3_version.append("0")
+       attribute: urllib3_version.append
+        identifier: urllib3_version
+        .: .
+        identifier: append
+       argument_list: ("0")
+        (: (
+        string: "0"
+         string_start: "
+         string_content: 0
+         string_end: "
+        ): )
+   comment: # Check urllib3 for compatibility.
+   expression_statement: major, minor, patch = urllib3_version
+    assignment: major, minor, patch = urllib3_version
+     pattern_list: major, minor, patch
+      identifier: major
+      ,: ,
+      identifier: minor
+      ,: ,
+      identifier: patch
+     =: =
+     identifier: urllib3_version
+   comment: # noqa: F811
+   expression_statement: major, minor, patch = int(major), int(minor), int(patch)
+    assignment: major, minor, patch = int(major), int(minor), int(patch)
+     pattern_list: major, minor, patch
+      identifier: major
+      ,: ,
+      identifier: minor
+      ,: ,
+      identifier: patch
+     =: =
+     expression_list: int(major), int(minor), int(patch)
+      call: int(major)
+       identifier: int
+       argument_list: (major)
+        (: (
+        identifier: major
+        ): )
+      ,: ,
+      call: int(minor)
+       identifier: int
+       argument_list: (minor)
+        (: (
+        identifier: minor
+        ): )
+      ,: ,
+      call: int(patch)
+       identifier: int
+       argument_list: (patch)
+        (: (
+        identifier: patch
+        ): )
+   comment: # urllib3 >= 1.21.1
+   assert_statement: assert major >= 1
+    assert: assert
+    comparison_operator: major >= 1
+     identifier: major
+     >=: >=
+     integer: 1
+   if_statement: if major == 1:
+        assert minor >= 21
+    if: if
+    comparison_operator: major == 1
+     identifier: major
+     ==: ==
+     integer: 1
+    :: :
+    block: assert minor >= 21
+     assert_statement: assert minor >= 21
+      assert: assert
+      comparison_operator: minor >= 21
+       identifier: minor
+       >=: >=
+       integer: 21
+   comment: # Check charset_normalizer for compatibility.
+   if_statement: if chardet_version:
+        major, minor, patch = chardet_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # chardet_version >= 3.0.2, < 6.0.0
+        assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+    elif charset_normalizer_version:
+        major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+    else:
+        warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+    if: if
+    identifier: chardet_version
+    :: :
+    block: major, minor, patch = chardet_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # chardet_version >= 3.0.2, < 6.0.0
+        assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+     expression_statement: major, minor, patch = chardet_version.split(".")[:3]
+      assignment: major, minor, patch = chardet_version.split(".")[:3]
+       pattern_list: major, minor, patch
+        identifier: major
+        ,: ,
+        identifier: minor
+        ,: ,
+        identifier: patch
+       =: =
+       subscript: chardet_version.split(".")[:3]
+        call: chardet_version.split(".")
+         attribute: chardet_version.split
+          identifier: chardet_version
+          .: .
+          identifier: split
+         argument_list: (".")
+          (: (
+          string: "."
+           string_start: "
+           string_content: .
+           string_end: "
+          ): )
+        [: [
+        slice: :3
+         :: :
+         integer: 3
+        ]: ]
+     expression_statement: major, minor, patch = int(major), int(minor), int(patch)
+      assignment: major, minor, patch = int(major), int(minor), int(patch)
+       pattern_list: major, minor, patch
+        identifier: major
+        ,: ,
+        identifier: minor
+        ,: ,
+        identifier: patch
+       =: =
+       expression_list: int(major), int(minor), int(patch)
+        call: int(major)
+         identifier: int
+         argument_list: (major)
+          (: (
+          identifier: major
+          ): )
+        ,: ,
+        call: int(minor)
+         identifier: int
+         argument_list: (minor)
+          (: (
+          identifier: minor
+          ): )
+        ,: ,
+        call: int(patch)
+         identifier: int
+         argument_list: (patch)
+          (: (
+          identifier: patch
+          ): )
+     comment: # chardet_version >= 3.0.2, < 6.0.0
+     assert_statement: assert (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+      assert: assert
+      comparison_operator: (3, 0, 2) <= (major, minor, patch) < (6, 0, 0)
+       tuple: (3, 0, 2)
+        (: (
+        integer: 3
+        ,: ,
+        integer: 0
+        ,: ,
+        integer: 2
+        ): )
+       <=: <=
+       tuple: (major, minor, patch)
+        (: (
+        identifier: major
+        ,: ,
+        identifier: minor
+        ,: ,
+        identifier: patch
+        ): )
+       <: <
+       tuple: (6, 0, 0)
+        (: (
+        integer: 6
+        ,: ,
+        integer: 0
+        ,: ,
+        integer: 0
+        ): )
+    elif_clause: elif charset_normalizer_version:
+        major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+     elif: elif
+     identifier: charset_normalizer_version
+     :: :
+     block: major, minor, patch = charset_normalizer_version.split(".")[:3]
+        major, minor, patch = int(major), int(minor), int(patch)
+        # charset_normalizer >= 2.0.0 < 4.0.0
+        assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+      expression_statement: major, minor, patch = charset_normalizer_version.split(".")[:3]
+       assignment: major, minor, patch = charset_normalizer_version.split(".")[:3]
+        pattern_list: major, minor, patch
+         identifier: major
+         ,: ,
+         identifier: minor
+         ,: ,
+         identifier: patch
+        =: =
+        subscript: charset_normalizer_version.split(".")[:3]
+         call: charset_normalizer_version.split(".")
+          attribute: charset_normalizer_version.split
+           identifier: charset_normalizer_version
+           .: .
+           identifier: split
+          argument_list: (".")
+           (: (
+           string: "."
+            string_start: "
+            string_content: .
+            string_end: "
+           ): )
+         [: [
+         slice: :3
+          :: :
+          integer: 3
+         ]: ]
+      expression_statement: major, minor, patch = int(major), int(minor), int(patch)
+       assignment: major, minor, patch = int(major), int(minor), int(patch)
+        pattern_list: major, minor, patch
+         identifier: major
+         ,: ,
+         identifier: minor
+         ,: ,
+         identifier: patch
+        =: =
+        expression_list: int(major), int(minor), int(patch)
+         call: int(major)
+          identifier: int
+          argument_list: (major)
+           (: (
+           identifier: major
+           ): )
+         ,: ,
+         call: int(minor)
+          identifier: int
+          argument_list: (minor)
+           (: (
+           identifier: minor
+           ): )
+         ,: ,
+         call: int(patch)
+          identifier: int
+          argument_list: (patch)
+           (: (
+           identifier: patch
+           ): )
+      comment: # charset_normalizer >= 2.0.0 < 4.0.0
+      assert_statement: assert (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+       assert: assert
+       comparison_operator: (2, 0, 0) <= (major, minor, patch) < (4, 0, 0)
+        tuple: (2, 0, 0)
+         (: (
+         integer: 2
+         ,: ,
+         integer: 0
+         ,: ,
+         integer: 0
+         ): )
+        <=: <=
+        tuple: (major, minor, patch)
+         (: (
+         identifier: major
+         ,: ,
+         identifier: minor
+         ,: ,
+         identifier: patch
+         ): )
+        <: <
+        tuple: (4, 0, 0)
+         (: (
+         integer: 4
+         ,: ,
+         integer: 0
+         ,: ,
+         integer: 0
+         ): )
+    else_clause: else:
+        warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+     else: else
+     :: :
+     block: warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+      expression_statement: warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+       call: warnings.warn(
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+        attribute: warnings.warn
+         identifier: warnings
+         .: .
+         identifier: warn
+        argument_list: (
+            "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer).",
+            RequestsDependencyWarning,
+        )
+         (: (
+         concatenated_string: "Unable to find acceptable character detection dependency "
+            "(chardet or charset_normalizer)."
+          string: "Unable to find acceptable character detection dependency "
+           string_start: "
+           string_content: Unable to find acceptable character detection dependency 
+           string_end: "
+          string: "(chardet or charset_normalizer)."
+           string_start: "
+           string_content: (chardet or charset_normalizer).
+           string_end: "
+         ,: ,
+         identifier: RequestsDependencyWarning
+         ,: ,
+         ): )
+ function_definition: def _check_cryptography(cryptography_version):
+    # cryptography < 1.3.4
+    try:
+        cryptography_version = list(map(int, cryptography_version.split(".")))
+    except ValueError:
+        return
+
+    if cryptography_version < [1, 3, 4]:
+        warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        warnings.warn(warning, RequestsDependencyWarning)
+  def: def
+  identifier: _check_cryptography
+  parameters: (cryptography_version)
+   (: (
+   identifier: cryptography_version
+   ): )
+  :: :
+  comment: # cryptography < 1.3.4
+  block: try:
+        cryptography_version = list(map(int, cryptography_version.split(".")))
+    except ValueError:
+        return
+
+    if cryptography_version < [1, 3, 4]:
+        warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        warnings.warn(warning, RequestsDependencyWarning)
+   try_statement: try:
+        cryptography_version = list(map(int, cryptography_version.split(".")))
+    except ValueError:
+        return
+    try: try
+    :: :
+    block: cryptography_version = list(map(int, cryptography_version.split(".")))
+     expression_statement: cryptography_version = list(map(int, cryptography_version.split(".")))
+      assignment: cryptography_version = list(map(int, cryptography_version.split(".")))
+       identifier: cryptography_version
+       =: =
+       call: list(map(int, cryptography_version.split(".")))
+        identifier: list
+        argument_list: (map(int, cryptography_version.split(".")))
+         (: (
+         call: map(int, cryptography_version.split("."))
+          identifier: map
+          argument_list: (int, cryptography_version.split("."))
+           (: (
+           identifier: int
+           ,: ,
+           call: cryptography_version.split(".")
+            attribute: cryptography_version.split
+             identifier: cryptography_version
+             .: .
+             identifier: split
+            argument_list: (".")
+             (: (
+             string: "."
+              string_start: "
+              string_content: .
+              string_end: "
+             ): )
+           ): )
+         ): )
+    except_clause: except ValueError:
+        return
+     except: except
+     identifier: ValueError
+     :: :
+     block: return
+      return_statement: return
+       return: return
+   if_statement: if cryptography_version < [1, 3, 4]:
+        warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        warnings.warn(warning, RequestsDependencyWarning)
+    if: if
+    comparison_operator: cryptography_version < [1, 3, 4]
+     identifier: cryptography_version
+     <: <
+     list: [1, 3, 4]
+      [: [
+      integer: 1
+      ,: ,
+      integer: 3
+      ,: ,
+      integer: 4
+      ]: ]
+    :: :
+    block: warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        warnings.warn(warning, RequestsDependencyWarning)
+     expression_statement: warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+      assignment: warning = "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+       identifier: warning
+       =: =
+       call: "Old version of cryptography ({}) may cause slowdown.".format(
+            cryptography_version
+        )
+        attribute: "Old version of cryptography ({}) may cause slowdown.".format
+         string: "Old version of cryptography ({}) may cause slowdown."
+          string_start: "
+          string_content: Old version of cryptography ({}) may cause slowdown.
+          string_end: "
+         .: .
+         identifier: format
+        argument_list: (
+            cryptography_version
+        )
+         (: (
+         identifier: cryptography_version
+         ): )
+     expression_statement: warnings.warn(warning, RequestsDependencyWarning)
+      call: warnings.warn(warning, RequestsDependencyWarning)
+       attribute: warnings.warn
+        identifier: warnings
+        .: .
+        identifier: warn
+       argument_list: (warning, RequestsDependencyWarning)
+        (: (
+        identifier: warning
+        ,: ,
+        identifier: RequestsDependencyWarning
+        ): )
+ comment: # Check imported dependencies for compatibility.
+ try_statement: try:
+    check_compatibility(
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+except (AssertionError, ValueError):
+    warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+  try: try
+  :: :
+  block: check_compatibility(
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+   expression_statement: check_compatibility(
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+    call: check_compatibility(
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+     identifier: check_compatibility
+     argument_list: (
+        urllib3.__version__, chardet_version, charset_normalizer_version
+    )
+      (: (
+      attribute: urllib3.__version__
+       identifier: urllib3
+       .: .
+       identifier: __version__
+      ,: ,
+      identifier: chardet_version
+      ,: ,
+      identifier: charset_normalizer_version
+      ): )
+  except_clause: except (AssertionError, ValueError):
+    warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+   except: except
+   tuple: (AssertionError, ValueError)
+    (: (
+    identifier: AssertionError
+    ,: ,
+    identifier: ValueError
+    ): )
+   :: :
+   block: warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+    expression_statement: warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+     call: warnings.warn(
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+      attribute: warnings.warn
+       identifier: warnings
+       .: .
+       identifier: warn
+      argument_list: (
+        "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        ),
+        RequestsDependencyWarning,
+    )
+       (: (
+       call: "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format(
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        )
+        attribute: "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!".format
+         concatenated_string: "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+        "version!"
+          string: "urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported "
+           string_start: "
+           string_content: urllib3 ({}) or chardet ({})/charset_normalizer ({}) doesn't match a supported 
+           string_end: "
+          string: "version!"
+           string_start: "
+           string_content: version!
+           string_end: "
+         .: .
+         identifier: format
+        argument_list: (
+            urllib3.__version__, chardet_version, charset_normalizer_version
+        )
+         (: (
+         attribute: urllib3.__version__
+          identifier: urllib3
+          .: .
+          identifier: __version__
+         ,: ,
+         identifier: chardet_version
+         ,: ,
+         identifier: charset_normalizer_version
+         ): )
+       ,: ,
+       identifier: RequestsDependencyWarning
+       ,: ,
+       ): )
+ comment: # Attempt to enable urllib3's fallback for SNI support
+ comment: # if the standard library doesn't support SNI or the
+ comment: # 'ssl' library isn't available.
+ try_statement: try:
+    try:
+        import ssl
+    except ImportError:
+        ssl = None
+
+    if not getattr(ssl, "HAS_SNI", False):
+        from urllib3.contrib import pyopenssl
+
+        pyopenssl.inject_into_urllib3()
+
+        # Check cryptography version
+        from cryptography import __version__ as cryptography_version
+
+        _check_cryptography(cryptography_version)
+except ImportError:
+    pass
+  try: try
+  :: :
+  block: try:
+        import ssl
+    except ImportError:
+        ssl = None
+
+    if not getattr(ssl, "HAS_SNI", False):
+        from urllib3.contrib import pyopenssl
+
+        pyopenssl.inject_into_urllib3()
+
+        # Check cryptography version
+        from cryptography import __version__ as cryptography_version
+
+        _check_cryptography(cryptography_version)
+   try_statement: try:
+        import ssl
+    except ImportError:
+        ssl = None
+    try: try
+    :: :
+    block: import ssl
+     import_statement: import ssl
+      import: import
+      dotted_name: ssl
+       identifier: ssl
+    except_clause: except ImportError:
+        ssl = None
+     except: except
+     identifier: ImportError
+     :: :
+     block: ssl = None
+      expression_statement: ssl = None
+       assignment: ssl = None
+        identifier: ssl
+        =: =
+        none: None
+   if_statement: if not getattr(ssl, "HAS_SNI", False):
+        from urllib3.contrib import pyopenssl
+
+        pyopenssl.inject_into_urllib3()
+
+        # Check cryptography version
+        from cryptography import __version__ as cryptography_version
+
+        _check_cryptography(cryptography_version)
+    if: if
+    not_operator: not getattr(ssl, "HAS_SNI", False)
+     not: not
+     call: getattr(ssl, "HAS_SNI", False)
+      identifier: getattr
+      argument_list: (ssl, "HAS_SNI", False)
+       (: (
+       identifier: ssl
+       ,: ,
+       string: "HAS_SNI"
+        string_start: "
+        string_content: HAS_SNI
+        string_end: "
+       ,: ,
+       false: False
+       ): )
+    :: :
+    block: from urllib3.contrib import pyopenssl
+
+        pyopenssl.inject_into_urllib3()
+
+        # Check cryptography version
+        from cryptography import __version__ as cryptography_version
+
+        _check_cryptography(cryptography_version)
+     import_from_statement: from urllib3.contrib import pyopenssl
+      from: from
+      dotted_name: urllib3.contrib
+       identifier: urllib3
+       .: .
+       identifier: contrib
+      import: import
+      dotted_name: pyopenssl
+       identifier: pyopenssl
+     expression_statement: pyopenssl.inject_into_urllib3()
+      call: pyopenssl.inject_into_urllib3()
+       attribute: pyopenssl.inject_into_urllib3
+        identifier: pyopenssl
+        .: .
+        identifier: inject_into_urllib3
+       argument_list: ()
+        (: (
+        ): )
+     comment: # Check cryptography version
+     import_from_statement: from cryptography import __version__ as cryptography_version
+      from: from
+      dotted_name: cryptography
+       identifier: cryptography
+      import: import
+      aliased_import: __version__ as cryptography_version
+       dotted_name: __version__
+        identifier: __version__
+       as: as
+       identifier: cryptography_version
+     expression_statement: _check_cryptography(cryptography_version)
+      call: _check_cryptography(cryptography_version)
+       identifier: _check_cryptography
+       argument_list: (cryptography_version)
+        (: (
+        identifier: cryptography_version
+        ): )
+  except_clause: except ImportError:
+    pass
+   except: except
+   identifier: ImportError
+   :: :
+   block: pass
+    pass_statement: pass
+     pass: pass
+ comment: # urllib3's DependencyWarnings should be silenced.
+ import_from_statement: from urllib3.exceptions import DependencyWarning
+  from: from
+  dotted_name: urllib3.exceptions
+   identifier: urllib3
+   .: .
+   identifier: exceptions
+  import: import
+  dotted_name: DependencyWarning
+   identifier: DependencyWarning
+ expression_statement: warnings.simplefilter("ignore", DependencyWarning)
+  call: warnings.simplefilter("ignore", DependencyWarning)
+   attribute: warnings.simplefilter
+    identifier: warnings
+    .: .
+    identifier: simplefilter
+   argument_list: ("ignore", DependencyWarning)
+    (: (
+    string: "ignore"
+     string_start: "
+     string_content: ignore
+     string_end: "
+    ,: ,
+    identifier: DependencyWarning
+    ): )
+ comment: # Set default logging handler to avoid "No handler found" warnings.
+ import_statement: import logging
+  import: import
+  dotted_name: logging
+   identifier: logging
+ import_from_statement: from logging import NullHandler
+  from: from
+  dotted_name: logging
+   identifier: logging
+  import: import
+  dotted_name: NullHandler
+   identifier: NullHandler
+ import_from_statement: from . import packages, utils
+  from: from
+  relative_import: .
+   import_prefix: .
+    .: .
+  import: import
+  dotted_name: packages
+   identifier: packages
+  ,: ,
+  dotted_name: utils
+   identifier: utils
+ import_from_statement: from .__version__ import (
+    __author__,
+    __author_email__,
+    __build__,
+    __cake__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __url__,
+    __version__,
+)
+  from: from
+  relative_import: .__version__
+   import_prefix: .
+    .: .
+   dotted_name: __version__
+    identifier: __version__
+  import: import
+  (: (
+  dotted_name: __author__
+   identifier: __author__
+  ,: ,
+  dotted_name: __author_email__
+   identifier: __author_email__
+  ,: ,
+  dotted_name: __build__
+   identifier: __build__
+  ,: ,
+  dotted_name: __cake__
+   identifier: __cake__
+  ,: ,
+  dotted_name: __copyright__
+   identifier: __copyright__
+  ,: ,
+  dotted_name: __description__
+   identifier: __description__
+  ,: ,
+  dotted_name: __license__
+   identifier: __license__
+  ,: ,
+  dotted_name: __title__
+   identifier: __title__
+  ,: ,
+  dotted_name: __url__
+   identifier: __url__
+  ,: ,
+  dotted_name: __version__
+   identifier: __version__
+  ,: ,
+  ): )
+ import_from_statement: from .api import delete, get, head, options, patch, post, put, request
+  from: from
+  relative_import: .api
+   import_prefix: .
+    .: .
+   dotted_name: api
+    identifier: api
+  import: import
+  dotted_name: delete
+   identifier: delete
+  ,: ,
+  dotted_name: get
+   identifier: get
+  ,: ,
+  dotted_name: head
+   identifier: head
+  ,: ,
+  dotted_name: options
+   identifier: options
+  ,: ,
+  dotted_name: patch
+   identifier: patch
+  ,: ,
+  dotted_name: post
+   identifier: post
+  ,: ,
+  dotted_name: put
+   identifier: put
+  ,: ,
+  dotted_name: request
+   identifier: request
+ import_from_statement: from .exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    FileModeWarning,
+    HTTPError,
+    JSONDecodeError,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+    TooManyRedirects,
+    URLRequired,
+)
+  from: from
+  relative_import: .exceptions
+   import_prefix: .
+    .: .
+   dotted_name: exceptions
+    identifier: exceptions
+  import: import
+  (: (
+  dotted_name: ConnectionError
+   identifier: ConnectionError
+  ,: ,
+  dotted_name: ConnectTimeout
+   identifier: ConnectTimeout
+  ,: ,
+  dotted_name: FileModeWarning
+   identifier: FileModeWarning
+  ,: ,
+  dotted_name: HTTPError
+   identifier: HTTPError
+  ,: ,
+  dotted_name: JSONDecodeError
+   identifier: JSONDecodeError
+  ,: ,
+  dotted_name: ReadTimeout
+   identifier: ReadTimeout
+  ,: ,
+  dotted_name: RequestException
+   identifier: RequestException
+  ,: ,
+  dotted_name: Timeout
+   identifier: Timeout
+  ,: ,
+  dotted_name: TooManyRedirects
+   identifier: TooManyRedirects
+  ,: ,
+  dotted_name: URLRequired
+   identifier: URLRequired
+  ,: ,
+  ): )
+ import_from_statement: from .models import PreparedRequest, Request, Response
+  from: from
+  relative_import: .models
+   import_prefix: .
+    .: .
+   dotted_name: models
+    identifier: models
+  import: import
+  dotted_name: PreparedRequest
+   identifier: PreparedRequest
+  ,: ,
+  dotted_name: Request
+   identifier: Request
+  ,: ,
+  dotted_name: Response
+   identifier: Response
+ import_from_statement: from .sessions import Session, session
+  from: from
+  relative_import: .sessions
+   import_prefix: .
+    .: .
+   dotted_name: sessions
+    identifier: sessions
+  import: import
+  dotted_name: Session
+   identifier: Session
+  ,: ,
+  dotted_name: session
+   identifier: session
+ import_from_statement: from .status_codes import codes
+  from: from
+  relative_import: .status_codes
+   import_prefix: .
+    .: .
+   dotted_name: status_codes
+    identifier: status_codes
+  import: import
+  dotted_name: codes
+   identifier: codes
+ expression_statement: logging.getLogger(__name__).addHandler(NullHandler())
+  call: logging.getLogger(__name__).addHandler(NullHandler())
+   attribute: logging.getLogger(__name__).addHandler
+    call: logging.getLogger(__name__)
+     attribute: logging.getLogger
+      identifier: logging
+      .: .
+      identifier: getLogger
+     argument_list: (__name__)
+      (: (
+      identifier: __name__
+      ): )
+    .: .
+    identifier: addHandler
+   argument_list: (NullHandler())
+    (: (
+    call: NullHandler()
+     identifier: NullHandler
+     argument_list: ()
+      (: (
+      ): )
+    ): )
+ comment: # FileModeWarnings go off per the default.
+ expression_statement: warnings.simplefilter("default", FileModeWarning, append=True)
+  call: warnings.simplefilter("default", FileModeWarning, append=True)
+   attribute: warnings.simplefilter
+    identifier: warnings
+    .: .
+    identifier: simplefilter
+   argument_list: ("default", FileModeWarning, append=True)
+    (: (
+    string: "default"
+     string_start: "
+     string_content: default
+     string_end: "
+    ,: ,
+    identifier: FileModeWarning
+    ,: ,
+    keyword_argument: append=True
+     identifier: append
+     =: =
+     true: True
+    ): )

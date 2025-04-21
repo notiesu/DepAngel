@@ -1,0 +1,7 @@
+.env
+build
+thoughts.txt
+todo.txt
+tree-sitter
+tree-sitter-python
+**/__pycache__/
