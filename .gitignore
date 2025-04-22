@@ -6,3 +6,4 @@ tree-sitter
 tree-sitter-python
 **/__pycache__/
 .DS_Store
+src/test/*
