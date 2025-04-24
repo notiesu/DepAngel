@@ -1,0 +1,25 @@
+{
+    "python": {
+      "function": {
+        "def_keyword": "function_definition",
+        "name_path": ["identifier"],
+        "args_path": ["parameters"],
+        "return_path": ["return_statement"],
+        "calls_path": ["block", "**", "call"],
+        "class_deps_path": []
+      },
+      "class": {
+        "def_keyword": "class_definition",
+        "name_path": ["identifier"],
+        "base_classes_path": ["argument_list", "identifier"],
+        "init_args_path": [],
+        "methods_path": ["body", "function_definition"],
+        "attributes_path": ["body", "**", "attribute"]
+      },
+      "import": {
+        "keywords": ["import_statement", "from_import"],
+        "module_path": ["module"]
+      }
+    }
+  }
+  

@@ -1,0 +1,6641 @@
+source_file: /*
+Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package tensorflow
+
+// #include "tensorflow/c/c_api.h"
+//
+// #include <stdlib.h>
+// #include <string.h>
+//
+// void TF_SetAttrShapeList_Helper(TF_OperationDescription* desc,
+//                                 const char* attr_name,
+//                                 const int64_t* flat_dims,
+//                                 const int* num_dims,
+//                                 int num_shapes) {
+//  const int64_t** dims =
+//    (const int64_t**)malloc(sizeof(const int64_t*) * num_shapes);
+//  int i = 0;
+//  for (i = 0; i < num_shapes; i++) {
+//    dims[i] = flat_dims;
+//    if (num_dims[i] > 0) {
+//      // flat_dims will be NULL iff num_shapes is 0 or all elements in num_dims are <= 0.
+//      flat_dims += num_dims[i];
+//    }
+//  }
+//  TF_SetAttrShapeList(desc, attr_name, dims, num_dims, num_shapes);
+//  free(dims);
+// }
+import "C"
+
+import (
+	"fmt"
+	"io"
+	"runtime"
+	"unsafe"
+)
+
+// Graph represents a computation graph. Graphs may be shared between sessions.
+type Graph struct {
+	c *C.TF_Graph
+}
+
+// The GraphImportOptions struct holds parameters for the ImportWithOptions function.
+type GraphImportOptions struct {
+	// Node prefix
+	Prefix string
+
+	// Execution device
+	Device string
+
+	// inputMapping defines a mapping between Outputs in the graph
+	// and Outputs they should be replaced with.
+	inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+
+	// TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+}
+
+// AddInputMapping adds a mapping between an Output in the imported graph
+// and an Output in the destination graph that it should be replaced with,
+// where src:srcIndex is the name of the Operation and Output index to
+// replace and dst is the output to replace it with.
+func (o *GraphImportOptions) AddInputMapping(src string, srcIndex int, dst Output) {
+	if o.inputMapping == nil {
+		o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+	}
+	o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}] = dst
+}
+
+// NewGraph returns a new Graph.
+func NewGraph() *Graph {
+	g := &Graph{C.TF_NewGraph()}
+	runtime.SetFinalizer(g, (*Graph).finalizer)
+	return g
+}
+
+func (g *Graph) finalizer() {
+	C.TF_DeleteGraph(g.c)
+}
+
+// WriteTo writes out a serialized representation of g to w.
+//
+// Implements the io.WriterTo interface.
+func (g *Graph) WriteTo(w io.Writer) (int64, error) {
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	status := newStatus()
+	C.TF_GraphToGraphDef(g.c, buf, status.c)
+	if err := status.Err(); err != nil {
+		return 0, err
+	}
+	if buf.length > (1 << 30) {
+		// For very large graphs, the writes can be chunked.
+		// Punt on that for now.
+		return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+	}
+	// A []byte slice backed by C memory.
+	// See: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
+	length := int(buf.length)
+	var slice []byte
+	if unsafe.Sizeof(unsafe.Pointer(nil)) == 8 {
+		slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+	} else {
+		slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+	n, err := w.Write(slice)
+	return int64(n), err
+}
+
+// ImportWithOptions imports the nodes and edges from a serialized representation of
+// another Graph into g.
+//
+// Multiple options can be specified for the newly imported nodes.
+func (g *Graph) ImportWithOptions(def []byte, options GraphImportOptions) error {
+	cprefix := C.CString(options.Prefix)
+	defer C.free(unsafe.Pointer(cprefix))
+
+	opts := C.TF_NewImportGraphDefOptions()
+	defer C.TF_DeleteImportGraphDefOptions(opts)
+	C.TF_ImportGraphDefOptionsSetPrefix(opts, cprefix)
+
+	if len(options.Device) != 0 {
+		cdev := C.CString(options.Device)
+		defer C.free(unsafe.Pointer(cdev))
+		C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+	}
+
+	for src, dst := range options.inputMapping {
+		cSrcName := C.CString(src.Name)
+		C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+		C.free(unsafe.Pointer(cSrcName))
+	}
+
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	buf.length = C.size_t(len(def))
+	buf.data = C.CBytes(def)
+	if buf.data == nil {
+		return fmt.Errorf("unable to allocate memory")
+	}
+	defer C.free(buf.data)
+
+	status := newStatus()
+
+	C.TF_GraphImportGraphDef(g.c, buf, opts, status.c)
+	if err := status.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Import imports the nodes and edges from a serialized representation of
+// another Graph into g.
+//
+// Names of imported nodes will be prefixed with prefix.
+func (g *Graph) Import(def []byte, prefix string) error {
+	return g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+}
+
+// Operation returns the Operation named name in the Graph, or nil if no such
+// operation is present.
+func (g *Graph) Operation(name string) *Operation {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	cop := C.TF_GraphOperationByName(g.c, cname)
+	if cop == nil {
+		return nil
+	}
+	return &Operation{cop, g}
+}
+
+// Operations returns a list of all operations in the graph
+func (g *Graph) Operations() []Operation {
+	var pos C.size_t
+	ops := []Operation{}
+	for {
+		cop := C.TF_GraphNextOperation(g.c, &pos)
+		if cop == nil {
+			break
+		}
+		ops = append(ops, Operation{cop, g})
+	}
+	return ops
+}
+
+// AddGradients adds operations to compute the partial derivatives of the sum of tensors in y
+// with respect to tensors in x, i.e., d(y[0] + y[1] + ...) / d x[0], d(y[0] + y[1] + ... ) / d x[1] etc.
+//
+// prefix, if non-empty, is the name prefix used for all operations added to the graph to compute
+// these gradients.
+func (g *Graph) AddGradients(prefix string, y []Output, x []Output, dx []Output) ([]Output, error) {
+	var (
+		cprefix *C.char
+
+		cy  = make([]C.TF_Output, len(y))
+		cx  = make([]C.TF_Output, len(x))
+		cdx = make([]C.TF_Output, len(dx))
+		cdy = make([]C.TF_Output, len(x))
+
+		pcy  *C.TF_Output
+		pcx  *C.TF_Output
+		pcdx *C.TF_Output
+		pcdy *C.TF_Output
+
+		status = newStatus()
+	)
+
+	if len(y) > 0 {
+		pcy = &cy[0]
+		for i, o := range y {
+			cy[i] = o.c()
+		}
+	}
+	if len(x) > 0 {
+		pcx = &cx[0]
+		for i, o := range x {
+			cx[i] = o.c()
+		}
+		pcdy = &cdy[0]
+	}
+	if len(dx) > 0 {
+		pcdx = &cdx[0]
+		for i, o := range dx {
+			cdx[i] = o.c()
+		}
+	}
+
+	// If prefix is "", the C.TF_AddGradientsWithPrefix need cprefix to be nil but not ""
+	if len(prefix) != 0 {
+		cprefix = C.CString(prefix)
+		defer C.free(unsafe.Pointer(cprefix))
+	}
+
+	C.TF_AddGradientsWithPrefix(g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	dy := make([]Output, len(x))
+	for i, co := range cdy {
+		op := &Operation{co.oper, g}
+		dy[i] = Output{op, int(co.index)}
+	}
+
+	return dy, nil
+}
+
+// OpSpec is the specification of an Operation to be added to a Graph
+// (using Graph.AddOperation).
+type OpSpec struct {
+	// Type of the operation (e.g., "Add", "MatMul").
+	Type string
+
+	// Name by which the added operation will be referred to in the Graph.
+	// If omitted, defaults to Type.
+	Name string
+
+	// Inputs to this operation, which in turn must be outputs
+	// of other operations already added to the Graph.
+	//
+	// An operation may have multiple inputs with individual inputs being
+	// either a single tensor produced by another operation or a list of
+	// tensors produced by multiple operations. For example, the "Concat"
+	// operation takes two inputs: (1) the dimension along which to
+	// concatenate and (2) a list of tensors to concatenate. Thus, for
+	// Concat, len(Input) must be 2, with the first element being an Output
+	// and the second being an OutputList.
+	Input []Input
+
+	// Map from attribute name to its value that will be attached to this
+	// operation.
+	Attrs map[string]interface{}
+
+	// Operations that must be executed before executing the operation
+	// being added.
+	ControlDependencies []*Operation
+
+	// The device on which the operation should be executed.
+	// If omitted, an appropriate device will automatically be selected.
+	//
+	// For example, if set of "/device:GPU:0", then the operation will
+	// execute on GPU #0.
+	Device string
+
+	// Other possible fields: ColocateWith.
+}
+
+// AddOperation adds an operation to g.
+func (g *Graph) AddOperation(args OpSpec) (*Operation, error) {
+	if args.Name == "" {
+		args.Name = args.Type
+	}
+	cname := C.CString(args.Name)
+	ctype := C.CString(args.Type)
+	cdesc := C.TF_NewOperation(g.c, ctype, cname)
+	C.free(unsafe.Pointer(cname))
+	C.free(unsafe.Pointer(ctype))
+
+	for _, in := range args.Input {
+		switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+	}
+	for _, in := range args.ControlDependencies {
+		C.TF_AddControlInput(cdesc, in.c)
+	}
+	status := newStatus()
+	for name, value := range args.Attrs {
+		if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+	}
+	if len(args.Device) > 0 {
+		cdevice := C.CString(args.Device)
+		C.TF_SetDevice(cdesc, cdevice)
+		C.free(unsafe.Pointer(cdevice))
+	}
+	c := C.TF_FinishOperation(cdesc, status.c)
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	return &Operation{c, g}, nil
+}
+
+func setAttr(cdesc *C.TF_OperationDescription, status *status, name string, value interface{}) error {
+	cAttrName := C.CString(name)
+	defer C.free(unsafe.Pointer(cAttrName))
+	switch value := value.(type) {
+	case string:
+		cstr := C.CString(value)
+		C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+		C.free(unsafe.Pointer(cstr))
+	case []string:
+		size := len(value)
+		list := make([]unsafe.Pointer, size)
+		lens := make([]C.size_t, size)
+		for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+		if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+		for _, s := range list {
+			C.free(s)
+		}
+	case int64:
+		C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+	case []int64:
+		size := len(value)
+		list := make([]C.int64_t, size)
+		for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+	case float32:
+		C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+	case []float32:
+		size := len(value)
+		list := make([]C.float, size)
+		for i, v := range value {
+			list[i] = C.float(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+	case bool:
+		v := C.uchar(0)
+		if value {
+			v = 1
+		}
+		C.TF_SetAttrBool(cdesc, cAttrName, v)
+	case []bool:
+		size := len(value)
+		list := make([]C.uchar, size)
+		for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+		if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+	case DataType:
+		C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+	case []DataType:
+		var list *C.TF_DataType
+		if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+		C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+	case *Tensor:
+		C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case []*Tensor:
+		size := len(value)
+		list := make([]*C.TF_Tensor, size)
+		for i, v := range value {
+			list[i] = v.c
+		}
+		var plist **C.TF_Tensor
+		if size > 0 {
+			plist = &list[0]
+		}
+		C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case Shape:
+		ndims := C.int(value.NumDimensions())
+		var dimsp *C.int64_t
+		if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+		C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+	case []Shape:
+		if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+	default:
+		return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+	}
+	return nil
+}
+
+type LibraryHandler struct {
+	cptr *C.TF_Library
+}
+
+// Load library content into current context, useful to load ops implementation into non-monolithic TF build. Returns LibraryHandler or nil and error
+func LoadLibrary(path string) (*LibraryHandler, error) {
+	status := newStatus()
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	cptr := C.TF_LoadLibrary(cpath, status.c)
+	if cptr == nil || status.Code() != C.TF_OK {
+		return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+	}
+
+	lh := &LibraryHandler{
+		cptr: cptr,
+	}
+
+	runtime.SetFinalizer(lh, (*LibraryHandler).free)
+	return lh, nil
+}
+
+func (lh *LibraryHandler) free() {
+	if lh == nil || lh.cptr == nil {
+		return
+	}
+
+	C.TF_DeleteLibraryHandle(lh.cptr)
+}
+
+ comment: /*
+Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+ package_clause: package tensorflow
+  package: package
+  package_identifier: tensorflow
+ comment: // #include "tensorflow/c/c_api.h"
+ comment: //
+ comment: // #include <stdlib.h>
+ comment: // #include <string.h>
+ comment: //
+ comment: // void TF_SetAttrShapeList_Helper(TF_OperationDescription* desc,
+ comment: //                                 const char* attr_name,
+ comment: //                                 const int64_t* flat_dims,
+ comment: //                                 const int* num_dims,
+ comment: //                                 int num_shapes) {
+ comment: //  const int64_t** dims =
+ comment: //    (const int64_t**)malloc(sizeof(const int64_t*) * num_shapes);
+ comment: //  int i = 0;
+ comment: //  for (i = 0; i < num_shapes; i++) {
+ comment: //    dims[i] = flat_dims;
+ comment: //    if (num_dims[i] > 0) {
+ comment: //      // flat_dims will be NULL iff num_shapes is 0 or all elements in num_dims are <= 0.
+ comment: //      flat_dims += num_dims[i];
+ comment: //    }
+ comment: //  }
+ comment: //  TF_SetAttrShapeList(desc, attr_name, dims, num_dims, num_shapes);
+ comment: //  free(dims);
+ comment: // }
+ import_declaration: import "C"
+  import: import
+  import_spec: "C"
+   interpreted_string_literal: "C"
+    ": "
+    interpreted_string_literal_content: C
+    ": "
+ import_declaration: import (
+	"fmt"
+	"io"
+	"runtime"
+	"unsafe"
+)
+  import: import
+  import_spec_list: (
+	"fmt"
+	"io"
+	"runtime"
+	"unsafe"
+)
+   (: (
+   import_spec: "fmt"
+    interpreted_string_literal: "fmt"
+     ": "
+     interpreted_string_literal_content: fmt
+     ": "
+   import_spec: "io"
+    interpreted_string_literal: "io"
+     ": "
+     interpreted_string_literal_content: io
+     ": "
+   import_spec: "runtime"
+    interpreted_string_literal: "runtime"
+     ": "
+     interpreted_string_literal_content: runtime
+     ": "
+   import_spec: "unsafe"
+    interpreted_string_literal: "unsafe"
+     ": "
+     interpreted_string_literal_content: unsafe
+     ": "
+   ): )
+ comment: // Graph represents a computation graph. Graphs may be shared between sessions.
+ type_declaration: type Graph struct {
+	c *C.TF_Graph
+}
+  type: type
+  type_spec: Graph struct {
+	c *C.TF_Graph
+}
+   type_identifier: Graph
+   struct_type: struct {
+	c *C.TF_Graph
+}
+    struct: struct
+    field_declaration_list: {
+	c *C.TF_Graph
+}
+     {: {
+     field_declaration: c *C.TF_Graph
+      field_identifier: c
+      pointer_type: *C.TF_Graph
+       *: *
+       qualified_type: C.TF_Graph
+        package_identifier: C
+        .: .
+        type_identifier: TF_Graph
+     }: }
+ comment: // The GraphImportOptions struct holds parameters for the ImportWithOptions function.
+ type_declaration: type GraphImportOptions struct {
+	// Node prefix
+	Prefix string
+
+	// Execution device
+	Device string
+
+	// inputMapping defines a mapping between Outputs in the graph
+	// and Outputs they should be replaced with.
+	inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+
+	// TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+}
+  type: type
+  type_spec: GraphImportOptions struct {
+	// Node prefix
+	Prefix string
+
+	// Execution device
+	Device string
+
+	// inputMapping defines a mapping between Outputs in the graph
+	// and Outputs they should be replaced with.
+	inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+
+	// TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+}
+   type_identifier: GraphImportOptions
+   struct_type: struct {
+	// Node prefix
+	Prefix string
+
+	// Execution device
+	Device string
+
+	// inputMapping defines a mapping between Outputs in the graph
+	// and Outputs they should be replaced with.
+	inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+
+	// TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+}
+    struct: struct
+    field_declaration_list: {
+	// Node prefix
+	Prefix string
+
+	// Execution device
+	Device string
+
+	// inputMapping defines a mapping between Outputs in the graph
+	// and Outputs they should be replaced with.
+	inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+
+	// TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+}
+     {: {
+     comment: // Node prefix
+     field_declaration: Prefix string
+      field_identifier: Prefix
+      type_identifier: string
+     comment: // Execution device
+     field_declaration: Device string
+      field_identifier: Device
+      type_identifier: string
+     comment: // inputMapping defines a mapping between Outputs in the graph
+     comment: // and Outputs they should be replaced with.
+     field_declaration: inputMapping map[struct {
+		Name  string
+		Index int
+	}]Output
+      field_identifier: inputMapping
+      map_type: map[struct {
+		Name  string
+		Index int
+	}]Output
+       map: map
+       [: [
+       struct_type: struct {
+		Name  string
+		Index int
+	}
+        struct: struct
+        field_declaration_list: {
+		Name  string
+		Index int
+	}
+         {: {
+         field_declaration: Name  string
+          field_identifier: Name
+          type_identifier: string
+         field_declaration: Index int
+          field_identifier: Index
+          type_identifier: int
+         }: }
+       ]: ]
+       type_identifier: Output
+     comment: // TODO: extend this structure to support more options from TF_ImportGraphDefOptions
+     }: }
+ comment: // AddInputMapping adds a mapping between an Output in the imported graph
+ comment: // and an Output in the destination graph that it should be replaced with,
+ comment: // where src:srcIndex is the name of the Operation and Output index to
+ comment: // replace and dst is the output to replace it with.
+ method_declaration: func (o *GraphImportOptions) AddInputMapping(src string, srcIndex int, dst Output) {
+	if o.inputMapping == nil {
+		o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+	}
+	o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}] = dst
+}
+  func: func
+  parameter_list: (o *GraphImportOptions)
+   (: (
+   parameter_declaration: o *GraphImportOptions
+    identifier: o
+    pointer_type: *GraphImportOptions
+     *: *
+     type_identifier: GraphImportOptions
+   ): )
+  field_identifier: AddInputMapping
+  parameter_list: (src string, srcIndex int, dst Output)
+   (: (
+   parameter_declaration: src string
+    identifier: src
+    type_identifier: string
+   ,: ,
+   parameter_declaration: srcIndex int
+    identifier: srcIndex
+    type_identifier: int
+   ,: ,
+   parameter_declaration: dst Output
+    identifier: dst
+    type_identifier: Output
+   ): )
+  block: {
+	if o.inputMapping == nil {
+		o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+	}
+	o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}] = dst
+}
+   {: {
+   if_statement: if o.inputMapping == nil {
+		o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+	}
+    if: if
+    binary_expression: o.inputMapping == nil
+     selector_expression: o.inputMapping
+      identifier: o
+      .: .
+      field_identifier: inputMapping
+     ==: ==
+     nil: nil
+    block: {
+		o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+	}
+     {: {
+     assignment_statement: o.inputMapping = make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+      expression_list: o.inputMapping
+       selector_expression: o.inputMapping
+        identifier: o
+        .: .
+        field_identifier: inputMapping
+      =: =
+      expression_list: make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+       call_expression: make(map[struct {
+			Name  string
+			Index int
+		}]Output)
+        identifier: make
+        argument_list: (map[struct {
+			Name  string
+			Index int
+		}]Output)
+         (: (
+         map_type: map[struct {
+			Name  string
+			Index int
+		}]Output
+          map: map
+          [: [
+          struct_type: struct {
+			Name  string
+			Index int
+		}
+           struct: struct
+           field_declaration_list: {
+			Name  string
+			Index int
+		}
+            {: {
+            field_declaration: Name  string
+             field_identifier: Name
+             type_identifier: string
+            field_declaration: Index int
+             field_identifier: Index
+             type_identifier: int
+            }: }
+          ]: ]
+          type_identifier: Output
+         ): )
+     }: }
+   assignment_statement: o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}] = dst
+    expression_list: o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}]
+     index_expression: o.inputMapping[struct {
+		Name  string
+		Index int
+	}{src, srcIndex}]
+      selector_expression: o.inputMapping
+       identifier: o
+       .: .
+       field_identifier: inputMapping
+      [: [
+      composite_literal: struct {
+		Name  string
+		Index int
+	}{src, srcIndex}
+       struct_type: struct {
+		Name  string
+		Index int
+	}
+        struct: struct
+        field_declaration_list: {
+		Name  string
+		Index int
+	}
+         {: {
+         field_declaration: Name  string
+          field_identifier: Name
+          type_identifier: string
+         field_declaration: Index int
+          field_identifier: Index
+          type_identifier: int
+         }: }
+       literal_value: {src, srcIndex}
+        {: {
+        literal_element: src
+         identifier: src
+        ,: ,
+        literal_element: srcIndex
+         identifier: srcIndex
+        }: }
+      ]: ]
+    =: =
+    expression_list: dst
+     identifier: dst
+   }: }
+ comment: // NewGraph returns a new Graph.
+ function_declaration: func NewGraph() *Graph {
+	g := &Graph{C.TF_NewGraph()}
+	runtime.SetFinalizer(g, (*Graph).finalizer)
+	return g
+}
+  func: func
+  identifier: NewGraph
+  parameter_list: ()
+   (: (
+   ): )
+  pointer_type: *Graph
+   *: *
+   type_identifier: Graph
+  block: {
+	g := &Graph{C.TF_NewGraph()}
+	runtime.SetFinalizer(g, (*Graph).finalizer)
+	return g
+}
+   {: {
+   short_var_declaration: g := &Graph{C.TF_NewGraph()}
+    expression_list: g
+     identifier: g
+    :=: :=
+    expression_list: &Graph{C.TF_NewGraph()}
+     unary_expression: &Graph{C.TF_NewGraph()}
+      &: &
+      composite_literal: Graph{C.TF_NewGraph()}
+       type_identifier: Graph
+       literal_value: {C.TF_NewGraph()}
+        {: {
+        literal_element: C.TF_NewGraph()
+         call_expression: C.TF_NewGraph()
+          selector_expression: C.TF_NewGraph
+           identifier: C
+           .: .
+           field_identifier: TF_NewGraph
+          argument_list: ()
+           (: (
+           ): )
+        }: }
+   expression_statement: runtime.SetFinalizer(g, (*Graph).finalizer)
+    call_expression: runtime.SetFinalizer(g, (*Graph).finalizer)
+     selector_expression: runtime.SetFinalizer
+      identifier: runtime
+      .: .
+      field_identifier: SetFinalizer
+     argument_list: (g, (*Graph).finalizer)
+      (: (
+      identifier: g
+      ,: ,
+      selector_expression: (*Graph).finalizer
+       parenthesized_expression: (*Graph)
+        (: (
+        unary_expression: *Graph
+         *: *
+         identifier: Graph
+        ): )
+       .: .
+       field_identifier: finalizer
+      ): )
+   return_statement: return g
+    return: return
+    expression_list: g
+     identifier: g
+   }: }
+ method_declaration: func (g *Graph) finalizer() {
+	C.TF_DeleteGraph(g.c)
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: finalizer
+  parameter_list: ()
+   (: (
+   ): )
+  block: {
+	C.TF_DeleteGraph(g.c)
+}
+   {: {
+   expression_statement: C.TF_DeleteGraph(g.c)
+    call_expression: C.TF_DeleteGraph(g.c)
+     selector_expression: C.TF_DeleteGraph
+      identifier: C
+      .: .
+      field_identifier: TF_DeleteGraph
+     argument_list: (g.c)
+      (: (
+      selector_expression: g.c
+       identifier: g
+       .: .
+       field_identifier: c
+      ): )
+   }: }
+ comment: // WriteTo writes out a serialized representation of g to w.
+ comment: //
+ comment: // Implements the io.WriterTo interface.
+ method_declaration: func (g *Graph) WriteTo(w io.Writer) (int64, error) {
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	status := newStatus()
+	C.TF_GraphToGraphDef(g.c, buf, status.c)
+	if err := status.Err(); err != nil {
+		return 0, err
+	}
+	if buf.length > (1 << 30) {
+		// For very large graphs, the writes can be chunked.
+		// Punt on that for now.
+		return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+	}
+	// A []byte slice backed by C memory.
+	// See: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
+	length := int(buf.length)
+	var slice []byte
+	if unsafe.Sizeof(unsafe.Pointer(nil)) == 8 {
+		slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+	} else {
+		slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+	n, err := w.Write(slice)
+	return int64(n), err
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: WriteTo
+  parameter_list: (w io.Writer)
+   (: (
+   parameter_declaration: w io.Writer
+    identifier: w
+    qualified_type: io.Writer
+     package_identifier: io
+     .: .
+     type_identifier: Writer
+   ): )
+  parameter_list: (int64, error)
+   (: (
+   parameter_declaration: int64
+    type_identifier: int64
+   ,: ,
+   parameter_declaration: error
+    type_identifier: error
+   ): )
+  block: {
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	status := newStatus()
+	C.TF_GraphToGraphDef(g.c, buf, status.c)
+	if err := status.Err(); err != nil {
+		return 0, err
+	}
+	if buf.length > (1 << 30) {
+		// For very large graphs, the writes can be chunked.
+		// Punt on that for now.
+		return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+	}
+	// A []byte slice backed by C memory.
+	// See: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
+	length := int(buf.length)
+	var slice []byte
+	if unsafe.Sizeof(unsafe.Pointer(nil)) == 8 {
+		slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+	} else {
+		slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+	n, err := w.Write(slice)
+	return int64(n), err
+}
+   {: {
+   short_var_declaration: buf := C.TF_NewBuffer()
+    expression_list: buf
+     identifier: buf
+    :=: :=
+    expression_list: C.TF_NewBuffer()
+     call_expression: C.TF_NewBuffer()
+      selector_expression: C.TF_NewBuffer
+       identifier: C
+       .: .
+       field_identifier: TF_NewBuffer
+      argument_list: ()
+       (: (
+       ): )
+   defer_statement: defer C.TF_DeleteBuffer(buf)
+    defer: defer
+    call_expression: C.TF_DeleteBuffer(buf)
+     selector_expression: C.TF_DeleteBuffer
+      identifier: C
+      .: .
+      field_identifier: TF_DeleteBuffer
+     argument_list: (buf)
+      (: (
+      identifier: buf
+      ): )
+   short_var_declaration: status := newStatus()
+    expression_list: status
+     identifier: status
+    :=: :=
+    expression_list: newStatus()
+     call_expression: newStatus()
+      identifier: newStatus
+      argument_list: ()
+       (: (
+       ): )
+   expression_statement: C.TF_GraphToGraphDef(g.c, buf, status.c)
+    call_expression: C.TF_GraphToGraphDef(g.c, buf, status.c)
+     selector_expression: C.TF_GraphToGraphDef
+      identifier: C
+      .: .
+      field_identifier: TF_GraphToGraphDef
+     argument_list: (g.c, buf, status.c)
+      (: (
+      selector_expression: g.c
+       identifier: g
+       .: .
+       field_identifier: c
+      ,: ,
+      identifier: buf
+      ,: ,
+      selector_expression: status.c
+       identifier: status
+       .: .
+       field_identifier: c
+      ): )
+   if_statement: if err := status.Err(); err != nil {
+		return 0, err
+	}
+    if: if
+    short_var_declaration: err := status.Err()
+     expression_list: err
+      identifier: err
+     :=: :=
+     expression_list: status.Err()
+      call_expression: status.Err()
+       selector_expression: status.Err
+        identifier: status
+        .: .
+        field_identifier: Err
+       argument_list: ()
+        (: (
+        ): )
+    ;: ;
+    binary_expression: err != nil
+     identifier: err
+     !=: !=
+     nil: nil
+    block: {
+		return 0, err
+	}
+     {: {
+     return_statement: return 0, err
+      return: return
+      expression_list: 0, err
+       int_literal: 0
+       ,: ,
+       identifier: err
+     }: }
+   if_statement: if buf.length > (1 << 30) {
+		// For very large graphs, the writes can be chunked.
+		// Punt on that for now.
+		return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+	}
+    if: if
+    binary_expression: buf.length > (1 << 30)
+     selector_expression: buf.length
+      identifier: buf
+      .: .
+      field_identifier: length
+     >: >
+     parenthesized_expression: (1 << 30)
+      (: (
+      binary_expression: 1 << 30
+       int_literal: 1
+       <<: <<
+       int_literal: 30
+      ): )
+    block: {
+		// For very large graphs, the writes can be chunked.
+		// Punt on that for now.
+		return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+	}
+     {: {
+     comment: // For very large graphs, the writes can be chunked.
+     comment: // Punt on that for now.
+     return_statement: return 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+      return: return
+      expression_list: 0, fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+       int_literal: 0
+       ,: ,
+       call_expression: fmt.Errorf("Graph is too large to write out, Graph.WriteTo needs to be updated")
+        selector_expression: fmt.Errorf
+         identifier: fmt
+         .: .
+         field_identifier: Errorf
+        argument_list: ("Graph is too large to write out, Graph.WriteTo needs to be updated")
+         (: (
+         interpreted_string_literal: "Graph is too large to write out, Graph.WriteTo needs to be updated"
+          ": "
+          interpreted_string_literal_content: Graph is too large to write out, Graph.WriteTo needs to be updated
+          ": "
+         ): )
+     }: }
+   comment: // A []byte slice backed by C memory.
+   comment: // See: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
+   short_var_declaration: length := int(buf.length)
+    expression_list: length
+     identifier: length
+    :=: :=
+    expression_list: int(buf.length)
+     call_expression: int(buf.length)
+      identifier: int
+      argument_list: (buf.length)
+       (: (
+       selector_expression: buf.length
+        identifier: buf
+        .: .
+        field_identifier: length
+       ): )
+   var_declaration: var slice []byte
+    var: var
+    var_spec: slice []byte
+     identifier: slice
+     slice_type: []byte
+      [: [
+      ]: ]
+      type_identifier: byte
+   if_statement: if unsafe.Sizeof(unsafe.Pointer(nil)) == 8 {
+		slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+	} else {
+		slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+    if: if
+    binary_expression: unsafe.Sizeof(unsafe.Pointer(nil)) == 8
+     call_expression: unsafe.Sizeof(unsafe.Pointer(nil))
+      selector_expression: unsafe.Sizeof
+       identifier: unsafe
+       .: .
+       field_identifier: Sizeof
+      argument_list: (unsafe.Pointer(nil))
+       (: (
+       call_expression: unsafe.Pointer(nil)
+        selector_expression: unsafe.Pointer
+         identifier: unsafe
+         .: .
+         field_identifier: Pointer
+        argument_list: (nil)
+         (: (
+         nil: nil
+         ): )
+       ): )
+     ==: ==
+     int_literal: 8
+    block: {
+		slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+     {: {
+     assignment_statement: slice = (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+      expression_list: slice
+       identifier: slice
+      =: =
+      expression_list: (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+       slice_expression: (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))[:length:length]
+        type_conversion_expression: (*[1<<50 - 1]byte)(unsafe.Pointer(buf.data))
+         parenthesized_type: (*[1<<50 - 1]byte)
+          (: (
+          pointer_type: *[1<<50 - 1]byte
+           *: *
+           array_type: [1<<50 - 1]byte
+            [: [
+            binary_expression: 1<<50 - 1
+             binary_expression: 1<<50
+              int_literal: 1
+              <<: <<
+              int_literal: 50
+             -: -
+             int_literal: 1
+            ]: ]
+            type_identifier: byte
+          ): )
+         (: (
+         call_expression: unsafe.Pointer(buf.data)
+          selector_expression: unsafe.Pointer
+           identifier: unsafe
+           .: .
+           field_identifier: Pointer
+          argument_list: (buf.data)
+           (: (
+           selector_expression: buf.data
+            identifier: buf
+            .: .
+            field_identifier: data
+           ): )
+         ): )
+        [: [
+        :: :
+        identifier: length
+        :: :
+        identifier: length
+        ]: ]
+     }: }
+    else: else
+    block: {
+		slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+	}
+     {: {
+     assignment_statement: slice = (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+      expression_list: slice
+       identifier: slice
+      =: =
+      expression_list: (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+       slice_expression: (*[1 << 30]byte)(unsafe.Pointer(buf.data))[:length:length]
+        type_conversion_expression: (*[1 << 30]byte)(unsafe.Pointer(buf.data))
+         parenthesized_type: (*[1 << 30]byte)
+          (: (
+          pointer_type: *[1 << 30]byte
+           *: *
+           array_type: [1 << 30]byte
+            [: [
+            binary_expression: 1 << 30
+             int_literal: 1
+             <<: <<
+             int_literal: 30
+            ]: ]
+            type_identifier: byte
+          ): )
+         (: (
+         call_expression: unsafe.Pointer(buf.data)
+          selector_expression: unsafe.Pointer
+           identifier: unsafe
+           .: .
+           field_identifier: Pointer
+          argument_list: (buf.data)
+           (: (
+           selector_expression: buf.data
+            identifier: buf
+            .: .
+            field_identifier: data
+           ): )
+         ): )
+        [: [
+        :: :
+        identifier: length
+        :: :
+        identifier: length
+        ]: ]
+     }: }
+   short_var_declaration: n, err := w.Write(slice)
+    expression_list: n, err
+     identifier: n
+     ,: ,
+     identifier: err
+    :=: :=
+    expression_list: w.Write(slice)
+     call_expression: w.Write(slice)
+      selector_expression: w.Write
+       identifier: w
+       .: .
+       field_identifier: Write
+      argument_list: (slice)
+       (: (
+       identifier: slice
+       ): )
+   return_statement: return int64(n), err
+    return: return
+    expression_list: int64(n), err
+     call_expression: int64(n)
+      identifier: int64
+      argument_list: (n)
+       (: (
+       identifier: n
+       ): )
+     ,: ,
+     identifier: err
+   }: }
+ comment: // ImportWithOptions imports the nodes and edges from a serialized representation of
+ comment: // another Graph into g.
+ comment: //
+ comment: // Multiple options can be specified for the newly imported nodes.
+ method_declaration: func (g *Graph) ImportWithOptions(def []byte, options GraphImportOptions) error {
+	cprefix := C.CString(options.Prefix)
+	defer C.free(unsafe.Pointer(cprefix))
+
+	opts := C.TF_NewImportGraphDefOptions()
+	defer C.TF_DeleteImportGraphDefOptions(opts)
+	C.TF_ImportGraphDefOptionsSetPrefix(opts, cprefix)
+
+	if len(options.Device) != 0 {
+		cdev := C.CString(options.Device)
+		defer C.free(unsafe.Pointer(cdev))
+		C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+	}
+
+	for src, dst := range options.inputMapping {
+		cSrcName := C.CString(src.Name)
+		C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+		C.free(unsafe.Pointer(cSrcName))
+	}
+
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	buf.length = C.size_t(len(def))
+	buf.data = C.CBytes(def)
+	if buf.data == nil {
+		return fmt.Errorf("unable to allocate memory")
+	}
+	defer C.free(buf.data)
+
+	status := newStatus()
+
+	C.TF_GraphImportGraphDef(g.c, buf, opts, status.c)
+	if err := status.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: ImportWithOptions
+  parameter_list: (def []byte, options GraphImportOptions)
+   (: (
+   parameter_declaration: def []byte
+    identifier: def
+    slice_type: []byte
+     [: [
+     ]: ]
+     type_identifier: byte
+   ,: ,
+   parameter_declaration: options GraphImportOptions
+    identifier: options
+    type_identifier: GraphImportOptions
+   ): )
+  type_identifier: error
+  block: {
+	cprefix := C.CString(options.Prefix)
+	defer C.free(unsafe.Pointer(cprefix))
+
+	opts := C.TF_NewImportGraphDefOptions()
+	defer C.TF_DeleteImportGraphDefOptions(opts)
+	C.TF_ImportGraphDefOptionsSetPrefix(opts, cprefix)
+
+	if len(options.Device) != 0 {
+		cdev := C.CString(options.Device)
+		defer C.free(unsafe.Pointer(cdev))
+		C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+	}
+
+	for src, dst := range options.inputMapping {
+		cSrcName := C.CString(src.Name)
+		C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+		C.free(unsafe.Pointer(cSrcName))
+	}
+
+	buf := C.TF_NewBuffer()
+	defer C.TF_DeleteBuffer(buf)
+	buf.length = C.size_t(len(def))
+	buf.data = C.CBytes(def)
+	if buf.data == nil {
+		return fmt.Errorf("unable to allocate memory")
+	}
+	defer C.free(buf.data)
+
+	status := newStatus()
+
+	C.TF_GraphImportGraphDef(g.c, buf, opts, status.c)
+	if err := status.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+   {: {
+   short_var_declaration: cprefix := C.CString(options.Prefix)
+    expression_list: cprefix
+     identifier: cprefix
+    :=: :=
+    expression_list: C.CString(options.Prefix)
+     call_expression: C.CString(options.Prefix)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (options.Prefix)
+       (: (
+       selector_expression: options.Prefix
+        identifier: options
+        .: .
+        field_identifier: Prefix
+       ): )
+   defer_statement: defer C.free(unsafe.Pointer(cprefix))
+    defer: defer
+    call_expression: C.free(unsafe.Pointer(cprefix))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(cprefix))
+      (: (
+      call_expression: unsafe.Pointer(cprefix)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (cprefix)
+        (: (
+        identifier: cprefix
+        ): )
+      ): )
+   short_var_declaration: opts := C.TF_NewImportGraphDefOptions()
+    expression_list: opts
+     identifier: opts
+    :=: :=
+    expression_list: C.TF_NewImportGraphDefOptions()
+     call_expression: C.TF_NewImportGraphDefOptions()
+      selector_expression: C.TF_NewImportGraphDefOptions
+       identifier: C
+       .: .
+       field_identifier: TF_NewImportGraphDefOptions
+      argument_list: ()
+       (: (
+       ): )
+   defer_statement: defer C.TF_DeleteImportGraphDefOptions(opts)
+    defer: defer
+    call_expression: C.TF_DeleteImportGraphDefOptions(opts)
+     selector_expression: C.TF_DeleteImportGraphDefOptions
+      identifier: C
+      .: .
+      field_identifier: TF_DeleteImportGraphDefOptions
+     argument_list: (opts)
+      (: (
+      identifier: opts
+      ): )
+   expression_statement: C.TF_ImportGraphDefOptionsSetPrefix(opts, cprefix)
+    call_expression: C.TF_ImportGraphDefOptionsSetPrefix(opts, cprefix)
+     selector_expression: C.TF_ImportGraphDefOptionsSetPrefix
+      identifier: C
+      .: .
+      field_identifier: TF_ImportGraphDefOptionsSetPrefix
+     argument_list: (opts, cprefix)
+      (: (
+      identifier: opts
+      ,: ,
+      identifier: cprefix
+      ): )
+   if_statement: if len(options.Device) != 0 {
+		cdev := C.CString(options.Device)
+		defer C.free(unsafe.Pointer(cdev))
+		C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+	}
+    if: if
+    binary_expression: len(options.Device) != 0
+     call_expression: len(options.Device)
+      identifier: len
+      argument_list: (options.Device)
+       (: (
+       selector_expression: options.Device
+        identifier: options
+        .: .
+        field_identifier: Device
+       ): )
+     !=: !=
+     int_literal: 0
+    block: {
+		cdev := C.CString(options.Device)
+		defer C.free(unsafe.Pointer(cdev))
+		C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+	}
+     {: {
+     short_var_declaration: cdev := C.CString(options.Device)
+      expression_list: cdev
+       identifier: cdev
+      :=: :=
+      expression_list: C.CString(options.Device)
+       call_expression: C.CString(options.Device)
+        selector_expression: C.CString
+         identifier: C
+         .: .
+         field_identifier: CString
+        argument_list: (options.Device)
+         (: (
+         selector_expression: options.Device
+          identifier: options
+          .: .
+          field_identifier: Device
+         ): )
+     defer_statement: defer C.free(unsafe.Pointer(cdev))
+      defer: defer
+      call_expression: C.free(unsafe.Pointer(cdev))
+       selector_expression: C.free
+        identifier: C
+        .: .
+        field_identifier: free
+       argument_list: (unsafe.Pointer(cdev))
+        (: (
+        call_expression: unsafe.Pointer(cdev)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cdev)
+          (: (
+          identifier: cdev
+          ): )
+        ): )
+     expression_statement: C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+      call_expression: C.TF_ImportGraphDefOptionsSetDefaultDevice(opts, cdev)
+       selector_expression: C.TF_ImportGraphDefOptionsSetDefaultDevice
+        identifier: C
+        .: .
+        field_identifier: TF_ImportGraphDefOptionsSetDefaultDevice
+       argument_list: (opts, cdev)
+        (: (
+        identifier: opts
+        ,: ,
+        identifier: cdev
+        ): )
+     }: }
+   for_statement: for src, dst := range options.inputMapping {
+		cSrcName := C.CString(src.Name)
+		C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+		C.free(unsafe.Pointer(cSrcName))
+	}
+    for: for
+    range_clause: src, dst := range options.inputMapping
+     expression_list: src, dst
+      identifier: src
+      ,: ,
+      identifier: dst
+     :=: :=
+     range: range
+     selector_expression: options.inputMapping
+      identifier: options
+      .: .
+      field_identifier: inputMapping
+    block: {
+		cSrcName := C.CString(src.Name)
+		C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+		C.free(unsafe.Pointer(cSrcName))
+	}
+     {: {
+     short_var_declaration: cSrcName := C.CString(src.Name)
+      expression_list: cSrcName
+       identifier: cSrcName
+      :=: :=
+      expression_list: C.CString(src.Name)
+       call_expression: C.CString(src.Name)
+        selector_expression: C.CString
+         identifier: C
+         .: .
+         field_identifier: CString
+        argument_list: (src.Name)
+         (: (
+         selector_expression: src.Name
+          identifier: src
+          .: .
+          field_identifier: Name
+         ): )
+     expression_statement: C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+      call_expression: C.TF_ImportGraphDefOptionsAddInputMapping(opts, cSrcName, C.int(src.Index), dst.c())
+       selector_expression: C.TF_ImportGraphDefOptionsAddInputMapping
+        identifier: C
+        .: .
+        field_identifier: TF_ImportGraphDefOptionsAddInputMapping
+       argument_list: (opts, cSrcName, C.int(src.Index), dst.c())
+        (: (
+        identifier: opts
+        ,: ,
+        identifier: cSrcName
+        ,: ,
+        call_expression: C.int(src.Index)
+         selector_expression: C.int
+          identifier: C
+          .: .
+          field_identifier: int
+         argument_list: (src.Index)
+          (: (
+          selector_expression: src.Index
+           identifier: src
+           .: .
+           field_identifier: Index
+          ): )
+        ,: ,
+        call_expression: dst.c()
+         selector_expression: dst.c
+          identifier: dst
+          .: .
+          field_identifier: c
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+     expression_statement: C.free(unsafe.Pointer(cSrcName))
+      call_expression: C.free(unsafe.Pointer(cSrcName))
+       selector_expression: C.free
+        identifier: C
+        .: .
+        field_identifier: free
+       argument_list: (unsafe.Pointer(cSrcName))
+        (: (
+        call_expression: unsafe.Pointer(cSrcName)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cSrcName)
+          (: (
+          identifier: cSrcName
+          ): )
+        ): )
+     }: }
+   short_var_declaration: buf := C.TF_NewBuffer()
+    expression_list: buf
+     identifier: buf
+    :=: :=
+    expression_list: C.TF_NewBuffer()
+     call_expression: C.TF_NewBuffer()
+      selector_expression: C.TF_NewBuffer
+       identifier: C
+       .: .
+       field_identifier: TF_NewBuffer
+      argument_list: ()
+       (: (
+       ): )
+   defer_statement: defer C.TF_DeleteBuffer(buf)
+    defer: defer
+    call_expression: C.TF_DeleteBuffer(buf)
+     selector_expression: C.TF_DeleteBuffer
+      identifier: C
+      .: .
+      field_identifier: TF_DeleteBuffer
+     argument_list: (buf)
+      (: (
+      identifier: buf
+      ): )
+   assignment_statement: buf.length = C.size_t(len(def))
+    expression_list: buf.length
+     selector_expression: buf.length
+      identifier: buf
+      .: .
+      field_identifier: length
+    =: =
+    expression_list: C.size_t(len(def))
+     call_expression: C.size_t(len(def))
+      selector_expression: C.size_t
+       identifier: C
+       .: .
+       field_identifier: size_t
+      argument_list: (len(def))
+       (: (
+       call_expression: len(def)
+        identifier: len
+        argument_list: (def)
+         (: (
+         identifier: def
+         ): )
+       ): )
+   assignment_statement: buf.data = C.CBytes(def)
+    expression_list: buf.data
+     selector_expression: buf.data
+      identifier: buf
+      .: .
+      field_identifier: data
+    =: =
+    expression_list: C.CBytes(def)
+     call_expression: C.CBytes(def)
+      selector_expression: C.CBytes
+       identifier: C
+       .: .
+       field_identifier: CBytes
+      argument_list: (def)
+       (: (
+       identifier: def
+       ): )
+   if_statement: if buf.data == nil {
+		return fmt.Errorf("unable to allocate memory")
+	}
+    if: if
+    binary_expression: buf.data == nil
+     selector_expression: buf.data
+      identifier: buf
+      .: .
+      field_identifier: data
+     ==: ==
+     nil: nil
+    block: {
+		return fmt.Errorf("unable to allocate memory")
+	}
+     {: {
+     return_statement: return fmt.Errorf("unable to allocate memory")
+      return: return
+      expression_list: fmt.Errorf("unable to allocate memory")
+       call_expression: fmt.Errorf("unable to allocate memory")
+        selector_expression: fmt.Errorf
+         identifier: fmt
+         .: .
+         field_identifier: Errorf
+        argument_list: ("unable to allocate memory")
+         (: (
+         interpreted_string_literal: "unable to allocate memory"
+          ": "
+          interpreted_string_literal_content: unable to allocate memory
+          ": "
+         ): )
+     }: }
+   defer_statement: defer C.free(buf.data)
+    defer: defer
+    call_expression: C.free(buf.data)
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (buf.data)
+      (: (
+      selector_expression: buf.data
+       identifier: buf
+       .: .
+       field_identifier: data
+      ): )
+   short_var_declaration: status := newStatus()
+    expression_list: status
+     identifier: status
+    :=: :=
+    expression_list: newStatus()
+     call_expression: newStatus()
+      identifier: newStatus
+      argument_list: ()
+       (: (
+       ): )
+   expression_statement: C.TF_GraphImportGraphDef(g.c, buf, opts, status.c)
+    call_expression: C.TF_GraphImportGraphDef(g.c, buf, opts, status.c)
+     selector_expression: C.TF_GraphImportGraphDef
+      identifier: C
+      .: .
+      field_identifier: TF_GraphImportGraphDef
+     argument_list: (g.c, buf, opts, status.c)
+      (: (
+      selector_expression: g.c
+       identifier: g
+       .: .
+       field_identifier: c
+      ,: ,
+      identifier: buf
+      ,: ,
+      identifier: opts
+      ,: ,
+      selector_expression: status.c
+       identifier: status
+       .: .
+       field_identifier: c
+      ): )
+   if_statement: if err := status.Err(); err != nil {
+		return err
+	}
+    if: if
+    short_var_declaration: err := status.Err()
+     expression_list: err
+      identifier: err
+     :=: :=
+     expression_list: status.Err()
+      call_expression: status.Err()
+       selector_expression: status.Err
+        identifier: status
+        .: .
+        field_identifier: Err
+       argument_list: ()
+        (: (
+        ): )
+    ;: ;
+    binary_expression: err != nil
+     identifier: err
+     !=: !=
+     nil: nil
+    block: {
+		return err
+	}
+     {: {
+     return_statement: return err
+      return: return
+      expression_list: err
+       identifier: err
+     }: }
+   return_statement: return nil
+    return: return
+    expression_list: nil
+     nil: nil
+   }: }
+ comment: // Import imports the nodes and edges from a serialized representation of
+ comment: // another Graph into g.
+ comment: //
+ comment: // Names of imported nodes will be prefixed with prefix.
+ method_declaration: func (g *Graph) Import(def []byte, prefix string) error {
+	return g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: Import
+  parameter_list: (def []byte, prefix string)
+   (: (
+   parameter_declaration: def []byte
+    identifier: def
+    slice_type: []byte
+     [: [
+     ]: ]
+     type_identifier: byte
+   ,: ,
+   parameter_declaration: prefix string
+    identifier: prefix
+    type_identifier: string
+   ): )
+  type_identifier: error
+  block: {
+	return g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+}
+   {: {
+   return_statement: return g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+    return: return
+    expression_list: g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+     call_expression: g.ImportWithOptions(def, GraphImportOptions{Prefix: prefix})
+      selector_expression: g.ImportWithOptions
+       identifier: g
+       .: .
+       field_identifier: ImportWithOptions
+      argument_list: (def, GraphImportOptions{Prefix: prefix})
+       (: (
+       identifier: def
+       ,: ,
+       composite_literal: GraphImportOptions{Prefix: prefix}
+        type_identifier: GraphImportOptions
+        literal_value: {Prefix: prefix}
+         {: {
+         keyed_element: Prefix: prefix
+          literal_element: Prefix
+           identifier: Prefix
+          :: :
+          literal_element: prefix
+           identifier: prefix
+         }: }
+       ): )
+   }: }
+ comment: // Operation returns the Operation named name in the Graph, or nil if no such
+ comment: // operation is present.
+ method_declaration: func (g *Graph) Operation(name string) *Operation {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	cop := C.TF_GraphOperationByName(g.c, cname)
+	if cop == nil {
+		return nil
+	}
+	return &Operation{cop, g}
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: Operation
+  parameter_list: (name string)
+   (: (
+   parameter_declaration: name string
+    identifier: name
+    type_identifier: string
+   ): )
+  pointer_type: *Operation
+   *: *
+   type_identifier: Operation
+  block: {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	cop := C.TF_GraphOperationByName(g.c, cname)
+	if cop == nil {
+		return nil
+	}
+	return &Operation{cop, g}
+}
+   {: {
+   short_var_declaration: cname := C.CString(name)
+    expression_list: cname
+     identifier: cname
+    :=: :=
+    expression_list: C.CString(name)
+     call_expression: C.CString(name)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (name)
+       (: (
+       identifier: name
+       ): )
+   defer_statement: defer C.free(unsafe.Pointer(cname))
+    defer: defer
+    call_expression: C.free(unsafe.Pointer(cname))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(cname))
+      (: (
+      call_expression: unsafe.Pointer(cname)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (cname)
+        (: (
+        identifier: cname
+        ): )
+      ): )
+   short_var_declaration: cop := C.TF_GraphOperationByName(g.c, cname)
+    expression_list: cop
+     identifier: cop
+    :=: :=
+    expression_list: C.TF_GraphOperationByName(g.c, cname)
+     call_expression: C.TF_GraphOperationByName(g.c, cname)
+      selector_expression: C.TF_GraphOperationByName
+       identifier: C
+       .: .
+       field_identifier: TF_GraphOperationByName
+      argument_list: (g.c, cname)
+       (: (
+       selector_expression: g.c
+        identifier: g
+        .: .
+        field_identifier: c
+       ,: ,
+       identifier: cname
+       ): )
+   if_statement: if cop == nil {
+		return nil
+	}
+    if: if
+    binary_expression: cop == nil
+     identifier: cop
+     ==: ==
+     nil: nil
+    block: {
+		return nil
+	}
+     {: {
+     return_statement: return nil
+      return: return
+      expression_list: nil
+       nil: nil
+     }: }
+   return_statement: return &Operation{cop, g}
+    return: return
+    expression_list: &Operation{cop, g}
+     unary_expression: &Operation{cop, g}
+      &: &
+      composite_literal: Operation{cop, g}
+       type_identifier: Operation
+       literal_value: {cop, g}
+        {: {
+        literal_element: cop
+         identifier: cop
+        ,: ,
+        literal_element: g
+         identifier: g
+        }: }
+   }: }
+ comment: // Operations returns a list of all operations in the graph
+ method_declaration: func (g *Graph) Operations() []Operation {
+	var pos C.size_t
+	ops := []Operation{}
+	for {
+		cop := C.TF_GraphNextOperation(g.c, &pos)
+		if cop == nil {
+			break
+		}
+		ops = append(ops, Operation{cop, g})
+	}
+	return ops
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: Operations
+  parameter_list: ()
+   (: (
+   ): )
+  slice_type: []Operation
+   [: [
+   ]: ]
+   type_identifier: Operation
+  block: {
+	var pos C.size_t
+	ops := []Operation{}
+	for {
+		cop := C.TF_GraphNextOperation(g.c, &pos)
+		if cop == nil {
+			break
+		}
+		ops = append(ops, Operation{cop, g})
+	}
+	return ops
+}
+   {: {
+   var_declaration: var pos C.size_t
+    var: var
+    var_spec: pos C.size_t
+     identifier: pos
+     qualified_type: C.size_t
+      package_identifier: C
+      .: .
+      type_identifier: size_t
+   short_var_declaration: ops := []Operation{}
+    expression_list: ops
+     identifier: ops
+    :=: :=
+    expression_list: []Operation{}
+     composite_literal: []Operation{}
+      slice_type: []Operation
+       [: [
+       ]: ]
+       type_identifier: Operation
+      literal_value: {}
+       {: {
+       }: }
+   for_statement: for {
+		cop := C.TF_GraphNextOperation(g.c, &pos)
+		if cop == nil {
+			break
+		}
+		ops = append(ops, Operation{cop, g})
+	}
+    for: for
+    block: {
+		cop := C.TF_GraphNextOperation(g.c, &pos)
+		if cop == nil {
+			break
+		}
+		ops = append(ops, Operation{cop, g})
+	}
+     {: {
+     short_var_declaration: cop := C.TF_GraphNextOperation(g.c, &pos)
+      expression_list: cop
+       identifier: cop
+      :=: :=
+      expression_list: C.TF_GraphNextOperation(g.c, &pos)
+       call_expression: C.TF_GraphNextOperation(g.c, &pos)
+        selector_expression: C.TF_GraphNextOperation
+         identifier: C
+         .: .
+         field_identifier: TF_GraphNextOperation
+        argument_list: (g.c, &pos)
+         (: (
+         selector_expression: g.c
+          identifier: g
+          .: .
+          field_identifier: c
+         ,: ,
+         unary_expression: &pos
+          &: &
+          identifier: pos
+         ): )
+     if_statement: if cop == nil {
+			break
+		}
+      if: if
+      binary_expression: cop == nil
+       identifier: cop
+       ==: ==
+       nil: nil
+      block: {
+			break
+		}
+       {: {
+       break_statement: break
+        break: break
+       }: }
+     assignment_statement: ops = append(ops, Operation{cop, g})
+      expression_list: ops
+       identifier: ops
+      =: =
+      expression_list: append(ops, Operation{cop, g})
+       call_expression: append(ops, Operation{cop, g})
+        identifier: append
+        argument_list: (ops, Operation{cop, g})
+         (: (
+         identifier: ops
+         ,: ,
+         composite_literal: Operation{cop, g}
+          type_identifier: Operation
+          literal_value: {cop, g}
+           {: {
+           literal_element: cop
+            identifier: cop
+           ,: ,
+           literal_element: g
+            identifier: g
+           }: }
+         ): )
+     }: }
+   return_statement: return ops
+    return: return
+    expression_list: ops
+     identifier: ops
+   }: }
+ comment: // AddGradients adds operations to compute the partial derivatives of the sum of tensors in y
+ comment: // with respect to tensors in x, i.e., d(y[0] + y[1] + ...) / d x[0], d(y[0] + y[1] + ... ) / d x[1] etc.
+ comment: //
+ comment: // prefix, if non-empty, is the name prefix used for all operations added to the graph to compute
+ comment: // these gradients.
+ method_declaration: func (g *Graph) AddGradients(prefix string, y []Output, x []Output, dx []Output) ([]Output, error) {
+	var (
+		cprefix *C.char
+
+		cy  = make([]C.TF_Output, len(y))
+		cx  = make([]C.TF_Output, len(x))
+		cdx = make([]C.TF_Output, len(dx))
+		cdy = make([]C.TF_Output, len(x))
+
+		pcy  *C.TF_Output
+		pcx  *C.TF_Output
+		pcdx *C.TF_Output
+		pcdy *C.TF_Output
+
+		status = newStatus()
+	)
+
+	if len(y) > 0 {
+		pcy = &cy[0]
+		for i, o := range y {
+			cy[i] = o.c()
+		}
+	}
+	if len(x) > 0 {
+		pcx = &cx[0]
+		for i, o := range x {
+			cx[i] = o.c()
+		}
+		pcdy = &cdy[0]
+	}
+	if len(dx) > 0 {
+		pcdx = &cdx[0]
+		for i, o := range dx {
+			cdx[i] = o.c()
+		}
+	}
+
+	// If prefix is "", the C.TF_AddGradientsWithPrefix need cprefix to be nil but not ""
+	if len(prefix) != 0 {
+		cprefix = C.CString(prefix)
+		defer C.free(unsafe.Pointer(cprefix))
+	}
+
+	C.TF_AddGradientsWithPrefix(g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	dy := make([]Output, len(x))
+	for i, co := range cdy {
+		op := &Operation{co.oper, g}
+		dy[i] = Output{op, int(co.index)}
+	}
+
+	return dy, nil
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: AddGradients
+  parameter_list: (prefix string, y []Output, x []Output, dx []Output)
+   (: (
+   parameter_declaration: prefix string
+    identifier: prefix
+    type_identifier: string
+   ,: ,
+   parameter_declaration: y []Output
+    identifier: y
+    slice_type: []Output
+     [: [
+     ]: ]
+     type_identifier: Output
+   ,: ,
+   parameter_declaration: x []Output
+    identifier: x
+    slice_type: []Output
+     [: [
+     ]: ]
+     type_identifier: Output
+   ,: ,
+   parameter_declaration: dx []Output
+    identifier: dx
+    slice_type: []Output
+     [: [
+     ]: ]
+     type_identifier: Output
+   ): )
+  parameter_list: ([]Output, error)
+   (: (
+   parameter_declaration: []Output
+    slice_type: []Output
+     [: [
+     ]: ]
+     type_identifier: Output
+   ,: ,
+   parameter_declaration: error
+    type_identifier: error
+   ): )
+  block: {
+	var (
+		cprefix *C.char
+
+		cy  = make([]C.TF_Output, len(y))
+		cx  = make([]C.TF_Output, len(x))
+		cdx = make([]C.TF_Output, len(dx))
+		cdy = make([]C.TF_Output, len(x))
+
+		pcy  *C.TF_Output
+		pcx  *C.TF_Output
+		pcdx *C.TF_Output
+		pcdy *C.TF_Output
+
+		status = newStatus()
+	)
+
+	if len(y) > 0 {
+		pcy = &cy[0]
+		for i, o := range y {
+			cy[i] = o.c()
+		}
+	}
+	if len(x) > 0 {
+		pcx = &cx[0]
+		for i, o := range x {
+			cx[i] = o.c()
+		}
+		pcdy = &cdy[0]
+	}
+	if len(dx) > 0 {
+		pcdx = &cdx[0]
+		for i, o := range dx {
+			cdx[i] = o.c()
+		}
+	}
+
+	// If prefix is "", the C.TF_AddGradientsWithPrefix need cprefix to be nil but not ""
+	if len(prefix) != 0 {
+		cprefix = C.CString(prefix)
+		defer C.free(unsafe.Pointer(cprefix))
+	}
+
+	C.TF_AddGradientsWithPrefix(g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	dy := make([]Output, len(x))
+	for i, co := range cdy {
+		op := &Operation{co.oper, g}
+		dy[i] = Output{op, int(co.index)}
+	}
+
+	return dy, nil
+}
+   {: {
+   var_declaration: var (
+		cprefix *C.char
+
+		cy  = make([]C.TF_Output, len(y))
+		cx  = make([]C.TF_Output, len(x))
+		cdx = make([]C.TF_Output, len(dx))
+		cdy = make([]C.TF_Output, len(x))
+
+		pcy  *C.TF_Output
+		pcx  *C.TF_Output
+		pcdx *C.TF_Output
+		pcdy *C.TF_Output
+
+		status = newStatus()
+	)
+    var: var
+    var_spec_list: (
+		cprefix *C.char
+
+		cy  = make([]C.TF_Output, len(y))
+		cx  = make([]C.TF_Output, len(x))
+		cdx = make([]C.TF_Output, len(dx))
+		cdy = make([]C.TF_Output, len(x))
+
+		pcy  *C.TF_Output
+		pcx  *C.TF_Output
+		pcdx *C.TF_Output
+		pcdy *C.TF_Output
+
+		status = newStatus()
+	)
+     (: (
+     var_spec: cprefix *C.char
+      identifier: cprefix
+      pointer_type: *C.char
+       *: *
+       qualified_type: C.char
+        package_identifier: C
+        .: .
+        type_identifier: char
+     var_spec: cy  = make([]C.TF_Output, len(y))
+      identifier: cy
+      =: =
+      expression_list: make([]C.TF_Output, len(y))
+       call_expression: make([]C.TF_Output, len(y))
+        identifier: make
+        argument_list: ([]C.TF_Output, len(y))
+         (: (
+         slice_type: []C.TF_Output
+          [: [
+          ]: ]
+          qualified_type: C.TF_Output
+           package_identifier: C
+           .: .
+           type_identifier: TF_Output
+         ,: ,
+         call_expression: len(y)
+          identifier: len
+          argument_list: (y)
+           (: (
+           identifier: y
+           ): )
+         ): )
+     var_spec: cx  = make([]C.TF_Output, len(x))
+      identifier: cx
+      =: =
+      expression_list: make([]C.TF_Output, len(x))
+       call_expression: make([]C.TF_Output, len(x))
+        identifier: make
+        argument_list: ([]C.TF_Output, len(x))
+         (: (
+         slice_type: []C.TF_Output
+          [: [
+          ]: ]
+          qualified_type: C.TF_Output
+           package_identifier: C
+           .: .
+           type_identifier: TF_Output
+         ,: ,
+         call_expression: len(x)
+          identifier: len
+          argument_list: (x)
+           (: (
+           identifier: x
+           ): )
+         ): )
+     var_spec: cdx = make([]C.TF_Output, len(dx))
+      identifier: cdx
+      =: =
+      expression_list: make([]C.TF_Output, len(dx))
+       call_expression: make([]C.TF_Output, len(dx))
+        identifier: make
+        argument_list: ([]C.TF_Output, len(dx))
+         (: (
+         slice_type: []C.TF_Output
+          [: [
+          ]: ]
+          qualified_type: C.TF_Output
+           package_identifier: C
+           .: .
+           type_identifier: TF_Output
+         ,: ,
+         call_expression: len(dx)
+          identifier: len
+          argument_list: (dx)
+           (: (
+           identifier: dx
+           ): )
+         ): )
+     var_spec: cdy = make([]C.TF_Output, len(x))
+      identifier: cdy
+      =: =
+      expression_list: make([]C.TF_Output, len(x))
+       call_expression: make([]C.TF_Output, len(x))
+        identifier: make
+        argument_list: ([]C.TF_Output, len(x))
+         (: (
+         slice_type: []C.TF_Output
+          [: [
+          ]: ]
+          qualified_type: C.TF_Output
+           package_identifier: C
+           .: .
+           type_identifier: TF_Output
+         ,: ,
+         call_expression: len(x)
+          identifier: len
+          argument_list: (x)
+           (: (
+           identifier: x
+           ): )
+         ): )
+     var_spec: pcy  *C.TF_Output
+      identifier: pcy
+      pointer_type: *C.TF_Output
+       *: *
+       qualified_type: C.TF_Output
+        package_identifier: C
+        .: .
+        type_identifier: TF_Output
+     var_spec: pcx  *C.TF_Output
+      identifier: pcx
+      pointer_type: *C.TF_Output
+       *: *
+       qualified_type: C.TF_Output
+        package_identifier: C
+        .: .
+        type_identifier: TF_Output
+     var_spec: pcdx *C.TF_Output
+      identifier: pcdx
+      pointer_type: *C.TF_Output
+       *: *
+       qualified_type: C.TF_Output
+        package_identifier: C
+        .: .
+        type_identifier: TF_Output
+     var_spec: pcdy *C.TF_Output
+      identifier: pcdy
+      pointer_type: *C.TF_Output
+       *: *
+       qualified_type: C.TF_Output
+        package_identifier: C
+        .: .
+        type_identifier: TF_Output
+     var_spec: status = newStatus()
+      identifier: status
+      =: =
+      expression_list: newStatus()
+       call_expression: newStatus()
+        identifier: newStatus
+        argument_list: ()
+         (: (
+         ): )
+     ): )
+   if_statement: if len(y) > 0 {
+		pcy = &cy[0]
+		for i, o := range y {
+			cy[i] = o.c()
+		}
+	}
+    if: if
+    binary_expression: len(y) > 0
+     call_expression: len(y)
+      identifier: len
+      argument_list: (y)
+       (: (
+       identifier: y
+       ): )
+     >: >
+     int_literal: 0
+    block: {
+		pcy = &cy[0]
+		for i, o := range y {
+			cy[i] = o.c()
+		}
+	}
+     {: {
+     assignment_statement: pcy = &cy[0]
+      expression_list: pcy
+       identifier: pcy
+      =: =
+      expression_list: &cy[0]
+       unary_expression: &cy[0]
+        &: &
+        index_expression: cy[0]
+         identifier: cy
+         [: [
+         int_literal: 0
+         ]: ]
+     for_statement: for i, o := range y {
+			cy[i] = o.c()
+		}
+      for: for
+      range_clause: i, o := range y
+       expression_list: i, o
+        identifier: i
+        ,: ,
+        identifier: o
+       :=: :=
+       range: range
+       identifier: y
+      block: {
+			cy[i] = o.c()
+		}
+       {: {
+       assignment_statement: cy[i] = o.c()
+        expression_list: cy[i]
+         index_expression: cy[i]
+          identifier: cy
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: o.c()
+         call_expression: o.c()
+          selector_expression: o.c
+           identifier: o
+           .: .
+           field_identifier: c
+          argument_list: ()
+           (: (
+           ): )
+       }: }
+     }: }
+   if_statement: if len(x) > 0 {
+		pcx = &cx[0]
+		for i, o := range x {
+			cx[i] = o.c()
+		}
+		pcdy = &cdy[0]
+	}
+    if: if
+    binary_expression: len(x) > 0
+     call_expression: len(x)
+      identifier: len
+      argument_list: (x)
+       (: (
+       identifier: x
+       ): )
+     >: >
+     int_literal: 0
+    block: {
+		pcx = &cx[0]
+		for i, o := range x {
+			cx[i] = o.c()
+		}
+		pcdy = &cdy[0]
+	}
+     {: {
+     assignment_statement: pcx = &cx[0]
+      expression_list: pcx
+       identifier: pcx
+      =: =
+      expression_list: &cx[0]
+       unary_expression: &cx[0]
+        &: &
+        index_expression: cx[0]
+         identifier: cx
+         [: [
+         int_literal: 0
+         ]: ]
+     for_statement: for i, o := range x {
+			cx[i] = o.c()
+		}
+      for: for
+      range_clause: i, o := range x
+       expression_list: i, o
+        identifier: i
+        ,: ,
+        identifier: o
+       :=: :=
+       range: range
+       identifier: x
+      block: {
+			cx[i] = o.c()
+		}
+       {: {
+       assignment_statement: cx[i] = o.c()
+        expression_list: cx[i]
+         index_expression: cx[i]
+          identifier: cx
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: o.c()
+         call_expression: o.c()
+          selector_expression: o.c
+           identifier: o
+           .: .
+           field_identifier: c
+          argument_list: ()
+           (: (
+           ): )
+       }: }
+     assignment_statement: pcdy = &cdy[0]
+      expression_list: pcdy
+       identifier: pcdy
+      =: =
+      expression_list: &cdy[0]
+       unary_expression: &cdy[0]
+        &: &
+        index_expression: cdy[0]
+         identifier: cdy
+         [: [
+         int_literal: 0
+         ]: ]
+     }: }
+   if_statement: if len(dx) > 0 {
+		pcdx = &cdx[0]
+		for i, o := range dx {
+			cdx[i] = o.c()
+		}
+	}
+    if: if
+    binary_expression: len(dx) > 0
+     call_expression: len(dx)
+      identifier: len
+      argument_list: (dx)
+       (: (
+       identifier: dx
+       ): )
+     >: >
+     int_literal: 0
+    block: {
+		pcdx = &cdx[0]
+		for i, o := range dx {
+			cdx[i] = o.c()
+		}
+	}
+     {: {
+     assignment_statement: pcdx = &cdx[0]
+      expression_list: pcdx
+       identifier: pcdx
+      =: =
+      expression_list: &cdx[0]
+       unary_expression: &cdx[0]
+        &: &
+        index_expression: cdx[0]
+         identifier: cdx
+         [: [
+         int_literal: 0
+         ]: ]
+     for_statement: for i, o := range dx {
+			cdx[i] = o.c()
+		}
+      for: for
+      range_clause: i, o := range dx
+       expression_list: i, o
+        identifier: i
+        ,: ,
+        identifier: o
+       :=: :=
+       range: range
+       identifier: dx
+      block: {
+			cdx[i] = o.c()
+		}
+       {: {
+       assignment_statement: cdx[i] = o.c()
+        expression_list: cdx[i]
+         index_expression: cdx[i]
+          identifier: cdx
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: o.c()
+         call_expression: o.c()
+          selector_expression: o.c
+           identifier: o
+           .: .
+           field_identifier: c
+          argument_list: ()
+           (: (
+           ): )
+       }: }
+     }: }
+   comment: // If prefix is "", the C.TF_AddGradientsWithPrefix need cprefix to be nil but not ""
+   if_statement: if len(prefix) != 0 {
+		cprefix = C.CString(prefix)
+		defer C.free(unsafe.Pointer(cprefix))
+	}
+    if: if
+    binary_expression: len(prefix) != 0
+     call_expression: len(prefix)
+      identifier: len
+      argument_list: (prefix)
+       (: (
+       identifier: prefix
+       ): )
+     !=: !=
+     int_literal: 0
+    block: {
+		cprefix = C.CString(prefix)
+		defer C.free(unsafe.Pointer(cprefix))
+	}
+     {: {
+     assignment_statement: cprefix = C.CString(prefix)
+      expression_list: cprefix
+       identifier: cprefix
+      =: =
+      expression_list: C.CString(prefix)
+       call_expression: C.CString(prefix)
+        selector_expression: C.CString
+         identifier: C
+         .: .
+         field_identifier: CString
+        argument_list: (prefix)
+         (: (
+         identifier: prefix
+         ): )
+     defer_statement: defer C.free(unsafe.Pointer(cprefix))
+      defer: defer
+      call_expression: C.free(unsafe.Pointer(cprefix))
+       selector_expression: C.free
+        identifier: C
+        .: .
+        field_identifier: free
+       argument_list: (unsafe.Pointer(cprefix))
+        (: (
+        call_expression: unsafe.Pointer(cprefix)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cprefix)
+          (: (
+          identifier: cprefix
+          ): )
+        ): )
+     }: }
+   expression_statement: C.TF_AddGradientsWithPrefix(g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+    call_expression: C.TF_AddGradientsWithPrefix(g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+     selector_expression: C.TF_AddGradientsWithPrefix
+      identifier: C
+      .: .
+      field_identifier: TF_AddGradientsWithPrefix
+     argument_list: (g.c, cprefix, pcy, C.int(len(y)), pcx, C.int(len(x)), pcdx, status.c, pcdy)
+      (: (
+      selector_expression: g.c
+       identifier: g
+       .: .
+       field_identifier: c
+      ,: ,
+      identifier: cprefix
+      ,: ,
+      identifier: pcy
+      ,: ,
+      call_expression: C.int(len(y))
+       selector_expression: C.int
+        identifier: C
+        .: .
+        field_identifier: int
+       argument_list: (len(y))
+        (: (
+        call_expression: len(y)
+         identifier: len
+         argument_list: (y)
+          (: (
+          identifier: y
+          ): )
+        ): )
+      ,: ,
+      identifier: pcx
+      ,: ,
+      call_expression: C.int(len(x))
+       selector_expression: C.int
+        identifier: C
+        .: .
+        field_identifier: int
+       argument_list: (len(x))
+        (: (
+        call_expression: len(x)
+         identifier: len
+         argument_list: (x)
+          (: (
+          identifier: x
+          ): )
+        ): )
+      ,: ,
+      identifier: pcdx
+      ,: ,
+      selector_expression: status.c
+       identifier: status
+       .: .
+       field_identifier: c
+      ,: ,
+      identifier: pcdy
+      ): )
+   if_statement: if err := status.Err(); err != nil {
+		return nil, err
+	}
+    if: if
+    short_var_declaration: err := status.Err()
+     expression_list: err
+      identifier: err
+     :=: :=
+     expression_list: status.Err()
+      call_expression: status.Err()
+       selector_expression: status.Err
+        identifier: status
+        .: .
+        field_identifier: Err
+       argument_list: ()
+        (: (
+        ): )
+    ;: ;
+    binary_expression: err != nil
+     identifier: err
+     !=: !=
+     nil: nil
+    block: {
+		return nil, err
+	}
+     {: {
+     return_statement: return nil, err
+      return: return
+      expression_list: nil, err
+       nil: nil
+       ,: ,
+       identifier: err
+     }: }
+   short_var_declaration: dy := make([]Output, len(x))
+    expression_list: dy
+     identifier: dy
+    :=: :=
+    expression_list: make([]Output, len(x))
+     call_expression: make([]Output, len(x))
+      identifier: make
+      argument_list: ([]Output, len(x))
+       (: (
+       slice_type: []Output
+        [: [
+        ]: ]
+        type_identifier: Output
+       ,: ,
+       call_expression: len(x)
+        identifier: len
+        argument_list: (x)
+         (: (
+         identifier: x
+         ): )
+       ): )
+   for_statement: for i, co := range cdy {
+		op := &Operation{co.oper, g}
+		dy[i] = Output{op, int(co.index)}
+	}
+    for: for
+    range_clause: i, co := range cdy
+     expression_list: i, co
+      identifier: i
+      ,: ,
+      identifier: co
+     :=: :=
+     range: range
+     identifier: cdy
+    block: {
+		op := &Operation{co.oper, g}
+		dy[i] = Output{op, int(co.index)}
+	}
+     {: {
+     short_var_declaration: op := &Operation{co.oper, g}
+      expression_list: op
+       identifier: op
+      :=: :=
+      expression_list: &Operation{co.oper, g}
+       unary_expression: &Operation{co.oper, g}
+        &: &
+        composite_literal: Operation{co.oper, g}
+         type_identifier: Operation
+         literal_value: {co.oper, g}
+          {: {
+          literal_element: co.oper
+           selector_expression: co.oper
+            identifier: co
+            .: .
+            field_identifier: oper
+          ,: ,
+          literal_element: g
+           identifier: g
+          }: }
+     assignment_statement: dy[i] = Output{op, int(co.index)}
+      expression_list: dy[i]
+       index_expression: dy[i]
+        identifier: dy
+        [: [
+        identifier: i
+        ]: ]
+      =: =
+      expression_list: Output{op, int(co.index)}
+       composite_literal: Output{op, int(co.index)}
+        type_identifier: Output
+        literal_value: {op, int(co.index)}
+         {: {
+         literal_element: op
+          identifier: op
+         ,: ,
+         literal_element: int(co.index)
+          call_expression: int(co.index)
+           identifier: int
+           argument_list: (co.index)
+            (: (
+            selector_expression: co.index
+             identifier: co
+             .: .
+             field_identifier: index
+            ): )
+         }: }
+     }: }
+   return_statement: return dy, nil
+    return: return
+    expression_list: dy, nil
+     identifier: dy
+     ,: ,
+     nil: nil
+   }: }
+ comment: // OpSpec is the specification of an Operation to be added to a Graph
+ comment: // (using Graph.AddOperation).
+ type_declaration: type OpSpec struct {
+	// Type of the operation (e.g., "Add", "MatMul").
+	Type string
+
+	// Name by which the added operation will be referred to in the Graph.
+	// If omitted, defaults to Type.
+	Name string
+
+	// Inputs to this operation, which in turn must be outputs
+	// of other operations already added to the Graph.
+	//
+	// An operation may have multiple inputs with individual inputs being
+	// either a single tensor produced by another operation or a list of
+	// tensors produced by multiple operations. For example, the "Concat"
+	// operation takes two inputs: (1) the dimension along which to
+	// concatenate and (2) a list of tensors to concatenate. Thus, for
+	// Concat, len(Input) must be 2, with the first element being an Output
+	// and the second being an OutputList.
+	Input []Input
+
+	// Map from attribute name to its value that will be attached to this
+	// operation.
+	Attrs map[string]interface{}
+
+	// Operations that must be executed before executing the operation
+	// being added.
+	ControlDependencies []*Operation
+
+	// The device on which the operation should be executed.
+	// If omitted, an appropriate device will automatically be selected.
+	//
+	// For example, if set of "/device:GPU:0", then the operation will
+	// execute on GPU #0.
+	Device string
+
+	// Other possible fields: ColocateWith.
+}
+  type: type
+  type_spec: OpSpec struct {
+	// Type of the operation (e.g., "Add", "MatMul").
+	Type string
+
+	// Name by which the added operation will be referred to in the Graph.
+	// If omitted, defaults to Type.
+	Name string
+
+	// Inputs to this operation, which in turn must be outputs
+	// of other operations already added to the Graph.
+	//
+	// An operation may have multiple inputs with individual inputs being
+	// either a single tensor produced by another operation or a list of
+	// tensors produced by multiple operations. For example, the "Concat"
+	// operation takes two inputs: (1) the dimension along which to
+	// concatenate and (2) a list of tensors to concatenate. Thus, for
+	// Concat, len(Input) must be 2, with the first element being an Output
+	// and the second being an OutputList.
+	Input []Input
+
+	// Map from attribute name to its value that will be attached to this
+	// operation.
+	Attrs map[string]interface{}
+
+	// Operations that must be executed before executing the operation
+	// being added.
+	ControlDependencies []*Operation
+
+	// The device on which the operation should be executed.
+	// If omitted, an appropriate device will automatically be selected.
+	//
+	// For example, if set of "/device:GPU:0", then the operation will
+	// execute on GPU #0.
+	Device string
+
+	// Other possible fields: ColocateWith.
+}
+   type_identifier: OpSpec
+   struct_type: struct {
+	// Type of the operation (e.g., "Add", "MatMul").
+	Type string
+
+	// Name by which the added operation will be referred to in the Graph.
+	// If omitted, defaults to Type.
+	Name string
+
+	// Inputs to this operation, which in turn must be outputs
+	// of other operations already added to the Graph.
+	//
+	// An operation may have multiple inputs with individual inputs being
+	// either a single tensor produced by another operation or a list of
+	// tensors produced by multiple operations. For example, the "Concat"
+	// operation takes two inputs: (1) the dimension along which to
+	// concatenate and (2) a list of tensors to concatenate. Thus, for
+	// Concat, len(Input) must be 2, with the first element being an Output
+	// and the second being an OutputList.
+	Input []Input
+
+	// Map from attribute name to its value that will be attached to this
+	// operation.
+	Attrs map[string]interface{}
+
+	// Operations that must be executed before executing the operation
+	// being added.
+	ControlDependencies []*Operation
+
+	// The device on which the operation should be executed.
+	// If omitted, an appropriate device will automatically be selected.
+	//
+	// For example, if set of "/device:GPU:0", then the operation will
+	// execute on GPU #0.
+	Device string
+
+	// Other possible fields: ColocateWith.
+}
+    struct: struct
+    field_declaration_list: {
+	// Type of the operation (e.g., "Add", "MatMul").
+	Type string
+
+	// Name by which the added operation will be referred to in the Graph.
+	// If omitted, defaults to Type.
+	Name string
+
+	// Inputs to this operation, which in turn must be outputs
+	// of other operations already added to the Graph.
+	//
+	// An operation may have multiple inputs with individual inputs being
+	// either a single tensor produced by another operation or a list of
+	// tensors produced by multiple operations. For example, the "Concat"
+	// operation takes two inputs: (1) the dimension along which to
+	// concatenate and (2) a list of tensors to concatenate. Thus, for
+	// Concat, len(Input) must be 2, with the first element being an Output
+	// and the second being an OutputList.
+	Input []Input
+
+	// Map from attribute name to its value that will be attached to this
+	// operation.
+	Attrs map[string]interface{}
+
+	// Operations that must be executed before executing the operation
+	// being added.
+	ControlDependencies []*Operation
+
+	// The device on which the operation should be executed.
+	// If omitted, an appropriate device will automatically be selected.
+	//
+	// For example, if set of "/device:GPU:0", then the operation will
+	// execute on GPU #0.
+	Device string
+
+	// Other possible fields: ColocateWith.
+}
+     {: {
+     comment: // Type of the operation (e.g., "Add", "MatMul").
+     field_declaration: Type string
+      field_identifier: Type
+      type_identifier: string
+     comment: // Name by which the added operation will be referred to in the Graph.
+     comment: // If omitted, defaults to Type.
+     field_declaration: Name string
+      field_identifier: Name
+      type_identifier: string
+     comment: // Inputs to this operation, which in turn must be outputs
+     comment: // of other operations already added to the Graph.
+     comment: //
+     comment: // An operation may have multiple inputs with individual inputs being
+     comment: // either a single tensor produced by another operation or a list of
+     comment: // tensors produced by multiple operations. For example, the "Concat"
+     comment: // operation takes two inputs: (1) the dimension along which to
+     comment: // concatenate and (2) a list of tensors to concatenate. Thus, for
+     comment: // Concat, len(Input) must be 2, with the first element being an Output
+     comment: // and the second being an OutputList.
+     field_declaration: Input []Input
+      field_identifier: Input
+      slice_type: []Input
+       [: [
+       ]: ]
+       type_identifier: Input
+     comment: // Map from attribute name to its value that will be attached to this
+     comment: // operation.
+     field_declaration: Attrs map[string]interface{}
+      field_identifier: Attrs
+      map_type: map[string]interface{}
+       map: map
+       [: [
+       type_identifier: string
+       ]: ]
+       interface_type: interface{}
+        interface: interface
+        {: {
+        }: }
+     comment: // Operations that must be executed before executing the operation
+     comment: // being added.
+     field_declaration: ControlDependencies []*Operation
+      field_identifier: ControlDependencies
+      slice_type: []*Operation
+       [: [
+       ]: ]
+       pointer_type: *Operation
+        *: *
+        type_identifier: Operation
+     comment: // The device on which the operation should be executed.
+     comment: // If omitted, an appropriate device will automatically be selected.
+     comment: //
+     comment: // For example, if set of "/device:GPU:0", then the operation will
+     comment: // execute on GPU #0.
+     field_declaration: Device string
+      field_identifier: Device
+      type_identifier: string
+     comment: // Other possible fields: ColocateWith.
+     }: }
+ comment: // AddOperation adds an operation to g.
+ method_declaration: func (g *Graph) AddOperation(args OpSpec) (*Operation, error) {
+	if args.Name == "" {
+		args.Name = args.Type
+	}
+	cname := C.CString(args.Name)
+	ctype := C.CString(args.Type)
+	cdesc := C.TF_NewOperation(g.c, ctype, cname)
+	C.free(unsafe.Pointer(cname))
+	C.free(unsafe.Pointer(ctype))
+
+	for _, in := range args.Input {
+		switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+	}
+	for _, in := range args.ControlDependencies {
+		C.TF_AddControlInput(cdesc, in.c)
+	}
+	status := newStatus()
+	for name, value := range args.Attrs {
+		if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+	}
+	if len(args.Device) > 0 {
+		cdevice := C.CString(args.Device)
+		C.TF_SetDevice(cdesc, cdevice)
+		C.free(unsafe.Pointer(cdevice))
+	}
+	c := C.TF_FinishOperation(cdesc, status.c)
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	return &Operation{c, g}, nil
+}
+  func: func
+  parameter_list: (g *Graph)
+   (: (
+   parameter_declaration: g *Graph
+    identifier: g
+    pointer_type: *Graph
+     *: *
+     type_identifier: Graph
+   ): )
+  field_identifier: AddOperation
+  parameter_list: (args OpSpec)
+   (: (
+   parameter_declaration: args OpSpec
+    identifier: args
+    type_identifier: OpSpec
+   ): )
+  parameter_list: (*Operation, error)
+   (: (
+   parameter_declaration: *Operation
+    pointer_type: *Operation
+     *: *
+     type_identifier: Operation
+   ,: ,
+   parameter_declaration: error
+    type_identifier: error
+   ): )
+  block: {
+	if args.Name == "" {
+		args.Name = args.Type
+	}
+	cname := C.CString(args.Name)
+	ctype := C.CString(args.Type)
+	cdesc := C.TF_NewOperation(g.c, ctype, cname)
+	C.free(unsafe.Pointer(cname))
+	C.free(unsafe.Pointer(ctype))
+
+	for _, in := range args.Input {
+		switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+	}
+	for _, in := range args.ControlDependencies {
+		C.TF_AddControlInput(cdesc, in.c)
+	}
+	status := newStatus()
+	for name, value := range args.Attrs {
+		if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+	}
+	if len(args.Device) > 0 {
+		cdevice := C.CString(args.Device)
+		C.TF_SetDevice(cdesc, cdevice)
+		C.free(unsafe.Pointer(cdevice))
+	}
+	c := C.TF_FinishOperation(cdesc, status.c)
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	return &Operation{c, g}, nil
+}
+   {: {
+   if_statement: if args.Name == "" {
+		args.Name = args.Type
+	}
+    if: if
+    binary_expression: args.Name == ""
+     selector_expression: args.Name
+      identifier: args
+      .: .
+      field_identifier: Name
+     ==: ==
+     interpreted_string_literal: ""
+      ": "
+      ": "
+    block: {
+		args.Name = args.Type
+	}
+     {: {
+     assignment_statement: args.Name = args.Type
+      expression_list: args.Name
+       selector_expression: args.Name
+        identifier: args
+        .: .
+        field_identifier: Name
+      =: =
+      expression_list: args.Type
+       selector_expression: args.Type
+        identifier: args
+        .: .
+        field_identifier: Type
+     }: }
+   short_var_declaration: cname := C.CString(args.Name)
+    expression_list: cname
+     identifier: cname
+    :=: :=
+    expression_list: C.CString(args.Name)
+     call_expression: C.CString(args.Name)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (args.Name)
+       (: (
+       selector_expression: args.Name
+        identifier: args
+        .: .
+        field_identifier: Name
+       ): )
+   short_var_declaration: ctype := C.CString(args.Type)
+    expression_list: ctype
+     identifier: ctype
+    :=: :=
+    expression_list: C.CString(args.Type)
+     call_expression: C.CString(args.Type)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (args.Type)
+       (: (
+       selector_expression: args.Type
+        identifier: args
+        .: .
+        field_identifier: Type
+       ): )
+   short_var_declaration: cdesc := C.TF_NewOperation(g.c, ctype, cname)
+    expression_list: cdesc
+     identifier: cdesc
+    :=: :=
+    expression_list: C.TF_NewOperation(g.c, ctype, cname)
+     call_expression: C.TF_NewOperation(g.c, ctype, cname)
+      selector_expression: C.TF_NewOperation
+       identifier: C
+       .: .
+       field_identifier: TF_NewOperation
+      argument_list: (g.c, ctype, cname)
+       (: (
+       selector_expression: g.c
+        identifier: g
+        .: .
+        field_identifier: c
+       ,: ,
+       identifier: ctype
+       ,: ,
+       identifier: cname
+       ): )
+   expression_statement: C.free(unsafe.Pointer(cname))
+    call_expression: C.free(unsafe.Pointer(cname))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(cname))
+      (: (
+      call_expression: unsafe.Pointer(cname)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (cname)
+        (: (
+        identifier: cname
+        ): )
+      ): )
+   expression_statement: C.free(unsafe.Pointer(ctype))
+    call_expression: C.free(unsafe.Pointer(ctype))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(ctype))
+      (: (
+      call_expression: unsafe.Pointer(ctype)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (ctype)
+        (: (
+        identifier: ctype
+        ): )
+      ): )
+   for_statement: for _, in := range args.Input {
+		switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+	}
+    for: for
+    range_clause: _, in := range args.Input
+     expression_list: _, in
+      identifier: _
+      ,: ,
+      identifier: in
+     :=: :=
+     range: range
+     selector_expression: args.Input
+      identifier: args
+      .: .
+      field_identifier: Input
+    block: {
+		switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+	}
+     {: {
+     type_switch_statement: switch in := in.(type) {
+		case Output:
+			C.TF_AddInput(cdesc, in.c())
+		case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+		}
+      switch: switch
+      expression_list: in
+       identifier: in
+      :=: :=
+      identifier: in
+      .: .
+      (: (
+      type: type
+      ): )
+      {: {
+      type_case: case Output:
+			C.TF_AddInput(cdesc, in.c())
+
+       case: case
+       type_identifier: Output
+       :: :
+       expression_statement: C.TF_AddInput(cdesc, in.c())
+        call_expression: C.TF_AddInput(cdesc, in.c())
+         selector_expression: C.TF_AddInput
+          identifier: C
+          .: .
+          field_identifier: TF_AddInput
+         argument_list: (cdesc, in.c())
+          (: (
+          identifier: cdesc
+          ,: ,
+          call_expression: in.c()
+           selector_expression: in.c
+            identifier: in
+            .: .
+            field_identifier: c
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+      type_case: case OutputList:
+			size := len(in)
+			list := make([]C.TF_Output, size)
+			for i, v := range in {
+				list[i] = v.c()
+			}
+			if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+
+       case: case
+       type_identifier: OutputList
+       :: :
+       short_var_declaration: size := len(in)
+        expression_list: size
+         identifier: size
+        :=: :=
+        expression_list: len(in)
+         call_expression: len(in)
+          identifier: len
+          argument_list: (in)
+           (: (
+           identifier: in
+           ): )
+       short_var_declaration: list := make([]C.TF_Output, size)
+        expression_list: list
+         identifier: list
+        :=: :=
+        expression_list: make([]C.TF_Output, size)
+         call_expression: make([]C.TF_Output, size)
+          identifier: make
+          argument_list: ([]C.TF_Output, size)
+           (: (
+           slice_type: []C.TF_Output
+            [: [
+            ]: ]
+            qualified_type: C.TF_Output
+             package_identifier: C
+             .: .
+             type_identifier: TF_Output
+           ,: ,
+           identifier: size
+           ): )
+       for_statement: for i, v := range in {
+				list[i] = v.c()
+			}
+        for: for
+        range_clause: i, v := range in
+         expression_list: i, v
+          identifier: i
+          ,: ,
+          identifier: v
+         :=: :=
+         range: range
+         identifier: in
+        block: {
+				list[i] = v.c()
+			}
+         {: {
+         assignment_statement: list[i] = v.c()
+          expression_list: list[i]
+           index_expression: list[i]
+            identifier: list
+            [: [
+            identifier: i
+            ]: ]
+          =: =
+          expression_list: v.c()
+           call_expression: v.c()
+            selector_expression: v.c
+             identifier: v
+             .: .
+             field_identifier: c
+            argument_list: ()
+             (: (
+             ): )
+         }: }
+       if_statement: if size > 0 {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			} else {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+        if: if
+        binary_expression: size > 0
+         identifier: size
+         >: >
+         int_literal: 0
+        block: {
+				C.TF_AddInputList(cdesc, &list[0], C.int(size))
+			}
+         {: {
+         expression_statement: C.TF_AddInputList(cdesc, &list[0], C.int(size))
+          call_expression: C.TF_AddInputList(cdesc, &list[0], C.int(size))
+           selector_expression: C.TF_AddInputList
+            identifier: C
+            .: .
+            field_identifier: TF_AddInputList
+           argument_list: (cdesc, &list[0], C.int(size))
+            (: (
+            identifier: cdesc
+            ,: ,
+            unary_expression: &list[0]
+             &: &
+             index_expression: list[0]
+              identifier: list
+              [: [
+              int_literal: 0
+              ]: ]
+            ,: ,
+            call_expression: C.int(size)
+             selector_expression: C.int
+              identifier: C
+              .: .
+              field_identifier: int
+             argument_list: (size)
+              (: (
+              identifier: size
+              ): )
+            ): )
+         }: }
+        else: else
+        block: {
+				C.TF_AddInputList(cdesc, nil, 0)
+			}
+         {: {
+         expression_statement: C.TF_AddInputList(cdesc, nil, 0)
+          call_expression: C.TF_AddInputList(cdesc, nil, 0)
+           selector_expression: C.TF_AddInputList
+            identifier: C
+            .: .
+            field_identifier: TF_AddInputList
+           argument_list: (cdesc, nil, 0)
+            (: (
+            identifier: cdesc
+            ,: ,
+            nil: nil
+            ,: ,
+            int_literal: 0
+            ): )
+         }: }
+      }: }
+     }: }
+   for_statement: for _, in := range args.ControlDependencies {
+		C.TF_AddControlInput(cdesc, in.c)
+	}
+    for: for
+    range_clause: _, in := range args.ControlDependencies
+     expression_list: _, in
+      identifier: _
+      ,: ,
+      identifier: in
+     :=: :=
+     range: range
+     selector_expression: args.ControlDependencies
+      identifier: args
+      .: .
+      field_identifier: ControlDependencies
+    block: {
+		C.TF_AddControlInput(cdesc, in.c)
+	}
+     {: {
+     expression_statement: C.TF_AddControlInput(cdesc, in.c)
+      call_expression: C.TF_AddControlInput(cdesc, in.c)
+       selector_expression: C.TF_AddControlInput
+        identifier: C
+        .: .
+        field_identifier: TF_AddControlInput
+       argument_list: (cdesc, in.c)
+        (: (
+        identifier: cdesc
+        ,: ,
+        selector_expression: in.c
+         identifier: in
+         .: .
+         field_identifier: c
+        ): )
+     }: }
+   short_var_declaration: status := newStatus()
+    expression_list: status
+     identifier: status
+    :=: :=
+    expression_list: newStatus()
+     call_expression: newStatus()
+      identifier: newStatus
+      argument_list: ()
+       (: (
+       ): )
+   for_statement: for name, value := range args.Attrs {
+		if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+	}
+    for: for
+    range_clause: name, value := range args.Attrs
+     expression_list: name, value
+      identifier: name
+      ,: ,
+      identifier: value
+     :=: :=
+     range: range
+     selector_expression: args.Attrs
+      identifier: args
+      .: .
+      field_identifier: Attrs
+    block: {
+		if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+	}
+     {: {
+     if_statement: if err := setAttr(cdesc, status, name, value); err != nil {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+      if: if
+      short_var_declaration: err := setAttr(cdesc, status, name, value)
+       expression_list: err
+        identifier: err
+       :=: :=
+       expression_list: setAttr(cdesc, status, name, value)
+        call_expression: setAttr(cdesc, status, name, value)
+         identifier: setAttr
+         argument_list: (cdesc, status, name, value)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: status
+          ,: ,
+          identifier: name
+          ,: ,
+          identifier: value
+          ): )
+      ;: ;
+      binary_expression: err != nil
+       identifier: err
+       !=: !=
+       nil: nil
+      block: {
+			// Memory leak here as the TF_OperationDescription
+			// object will not be cleaned up. At the time of this
+			// writing, this was next to impossible since it
+			// required value to be a string tensor with
+			// incorrectly encoded strings. Given this rarity, live
+			// with the memory leak.  If it becomes a real problem,
+			// consider adding a TF_DeleteOperationDescription
+			// function to the C API.
+			return nil, fmt.Errorf("%v (memory will be leaked)", err)
+		}
+       {: {
+       comment: // Memory leak here as the TF_OperationDescription
+       comment: // object will not be cleaned up. At the time of this
+       comment: // writing, this was next to impossible since it
+       comment: // required value to be a string tensor with
+       comment: // incorrectly encoded strings. Given this rarity, live
+       comment: // with the memory leak.  If it becomes a real problem,
+       comment: // consider adding a TF_DeleteOperationDescription
+       comment: // function to the C API.
+       return_statement: return nil, fmt.Errorf("%v (memory will be leaked)", err)
+        return: return
+        expression_list: nil, fmt.Errorf("%v (memory will be leaked)", err)
+         nil: nil
+         ,: ,
+         call_expression: fmt.Errorf("%v (memory will be leaked)", err)
+          selector_expression: fmt.Errorf
+           identifier: fmt
+           .: .
+           field_identifier: Errorf
+          argument_list: ("%v (memory will be leaked)", err)
+           (: (
+           interpreted_string_literal: "%v (memory will be leaked)"
+            ": "
+            interpreted_string_literal_content: %v (memory will be leaked)
+            ": "
+           ,: ,
+           identifier: err
+           ): )
+       }: }
+     }: }
+   if_statement: if len(args.Device) > 0 {
+		cdevice := C.CString(args.Device)
+		C.TF_SetDevice(cdesc, cdevice)
+		C.free(unsafe.Pointer(cdevice))
+	}
+    if: if
+    binary_expression: len(args.Device) > 0
+     call_expression: len(args.Device)
+      identifier: len
+      argument_list: (args.Device)
+       (: (
+       selector_expression: args.Device
+        identifier: args
+        .: .
+        field_identifier: Device
+       ): )
+     >: >
+     int_literal: 0
+    block: {
+		cdevice := C.CString(args.Device)
+		C.TF_SetDevice(cdesc, cdevice)
+		C.free(unsafe.Pointer(cdevice))
+	}
+     {: {
+     short_var_declaration: cdevice := C.CString(args.Device)
+      expression_list: cdevice
+       identifier: cdevice
+      :=: :=
+      expression_list: C.CString(args.Device)
+       call_expression: C.CString(args.Device)
+        selector_expression: C.CString
+         identifier: C
+         .: .
+         field_identifier: CString
+        argument_list: (args.Device)
+         (: (
+         selector_expression: args.Device
+          identifier: args
+          .: .
+          field_identifier: Device
+         ): )
+     expression_statement: C.TF_SetDevice(cdesc, cdevice)
+      call_expression: C.TF_SetDevice(cdesc, cdevice)
+       selector_expression: C.TF_SetDevice
+        identifier: C
+        .: .
+        field_identifier: TF_SetDevice
+       argument_list: (cdesc, cdevice)
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cdevice
+        ): )
+     expression_statement: C.free(unsafe.Pointer(cdevice))
+      call_expression: C.free(unsafe.Pointer(cdevice))
+       selector_expression: C.free
+        identifier: C
+        .: .
+        field_identifier: free
+       argument_list: (unsafe.Pointer(cdevice))
+        (: (
+        call_expression: unsafe.Pointer(cdevice)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cdevice)
+          (: (
+          identifier: cdevice
+          ): )
+        ): )
+     }: }
+   short_var_declaration: c := C.TF_FinishOperation(cdesc, status.c)
+    expression_list: c
+     identifier: c
+    :=: :=
+    expression_list: C.TF_FinishOperation(cdesc, status.c)
+     call_expression: C.TF_FinishOperation(cdesc, status.c)
+      selector_expression: C.TF_FinishOperation
+       identifier: C
+       .: .
+       field_identifier: TF_FinishOperation
+      argument_list: (cdesc, status.c)
+       (: (
+       identifier: cdesc
+       ,: ,
+       selector_expression: status.c
+        identifier: status
+        .: .
+        field_identifier: c
+       ): )
+   if_statement: if err := status.Err(); err != nil {
+		return nil, err
+	}
+    if: if
+    short_var_declaration: err := status.Err()
+     expression_list: err
+      identifier: err
+     :=: :=
+     expression_list: status.Err()
+      call_expression: status.Err()
+       selector_expression: status.Err
+        identifier: status
+        .: .
+        field_identifier: Err
+       argument_list: ()
+        (: (
+        ): )
+    ;: ;
+    binary_expression: err != nil
+     identifier: err
+     !=: !=
+     nil: nil
+    block: {
+		return nil, err
+	}
+     {: {
+     return_statement: return nil, err
+      return: return
+      expression_list: nil, err
+       nil: nil
+       ,: ,
+       identifier: err
+     }: }
+   return_statement: return &Operation{c, g}, nil
+    return: return
+    expression_list: &Operation{c, g}, nil
+     unary_expression: &Operation{c, g}
+      &: &
+      composite_literal: Operation{c, g}
+       type_identifier: Operation
+       literal_value: {c, g}
+        {: {
+        literal_element: c
+         identifier: c
+        ,: ,
+        literal_element: g
+         identifier: g
+        }: }
+     ,: ,
+     nil: nil
+   }: }
+ function_declaration: func setAttr(cdesc *C.TF_OperationDescription, status *status, name string, value interface{}) error {
+	cAttrName := C.CString(name)
+	defer C.free(unsafe.Pointer(cAttrName))
+	switch value := value.(type) {
+	case string:
+		cstr := C.CString(value)
+		C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+		C.free(unsafe.Pointer(cstr))
+	case []string:
+		size := len(value)
+		list := make([]unsafe.Pointer, size)
+		lens := make([]C.size_t, size)
+		for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+		if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+		for _, s := range list {
+			C.free(s)
+		}
+	case int64:
+		C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+	case []int64:
+		size := len(value)
+		list := make([]C.int64_t, size)
+		for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+	case float32:
+		C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+	case []float32:
+		size := len(value)
+		list := make([]C.float, size)
+		for i, v := range value {
+			list[i] = C.float(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+	case bool:
+		v := C.uchar(0)
+		if value {
+			v = 1
+		}
+		C.TF_SetAttrBool(cdesc, cAttrName, v)
+	case []bool:
+		size := len(value)
+		list := make([]C.uchar, size)
+		for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+		if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+	case DataType:
+		C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+	case []DataType:
+		var list *C.TF_DataType
+		if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+		C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+	case *Tensor:
+		C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case []*Tensor:
+		size := len(value)
+		list := make([]*C.TF_Tensor, size)
+		for i, v := range value {
+			list[i] = v.c
+		}
+		var plist **C.TF_Tensor
+		if size > 0 {
+			plist = &list[0]
+		}
+		C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case Shape:
+		ndims := C.int(value.NumDimensions())
+		var dimsp *C.int64_t
+		if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+		C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+	case []Shape:
+		if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+	default:
+		return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+	}
+	return nil
+}
+  func: func
+  identifier: setAttr
+  parameter_list: (cdesc *C.TF_OperationDescription, status *status, name string, value interface{})
+   (: (
+   parameter_declaration: cdesc *C.TF_OperationDescription
+    identifier: cdesc
+    pointer_type: *C.TF_OperationDescription
+     *: *
+     qualified_type: C.TF_OperationDescription
+      package_identifier: C
+      .: .
+      type_identifier: TF_OperationDescription
+   ,: ,
+   parameter_declaration: status *status
+    identifier: status
+    pointer_type: *status
+     *: *
+     type_identifier: status
+   ,: ,
+   parameter_declaration: name string
+    identifier: name
+    type_identifier: string
+   ,: ,
+   parameter_declaration: value interface{}
+    identifier: value
+    interface_type: interface{}
+     interface: interface
+     {: {
+     }: }
+   ): )
+  type_identifier: error
+  block: {
+	cAttrName := C.CString(name)
+	defer C.free(unsafe.Pointer(cAttrName))
+	switch value := value.(type) {
+	case string:
+		cstr := C.CString(value)
+		C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+		C.free(unsafe.Pointer(cstr))
+	case []string:
+		size := len(value)
+		list := make([]unsafe.Pointer, size)
+		lens := make([]C.size_t, size)
+		for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+		if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+		for _, s := range list {
+			C.free(s)
+		}
+	case int64:
+		C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+	case []int64:
+		size := len(value)
+		list := make([]C.int64_t, size)
+		for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+	case float32:
+		C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+	case []float32:
+		size := len(value)
+		list := make([]C.float, size)
+		for i, v := range value {
+			list[i] = C.float(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+	case bool:
+		v := C.uchar(0)
+		if value {
+			v = 1
+		}
+		C.TF_SetAttrBool(cdesc, cAttrName, v)
+	case []bool:
+		size := len(value)
+		list := make([]C.uchar, size)
+		for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+		if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+	case DataType:
+		C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+	case []DataType:
+		var list *C.TF_DataType
+		if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+		C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+	case *Tensor:
+		C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case []*Tensor:
+		size := len(value)
+		list := make([]*C.TF_Tensor, size)
+		for i, v := range value {
+			list[i] = v.c
+		}
+		var plist **C.TF_Tensor
+		if size > 0 {
+			plist = &list[0]
+		}
+		C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case Shape:
+		ndims := C.int(value.NumDimensions())
+		var dimsp *C.int64_t
+		if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+		C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+	case []Shape:
+		if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+	default:
+		return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+	}
+	return nil
+}
+   {: {
+   short_var_declaration: cAttrName := C.CString(name)
+    expression_list: cAttrName
+     identifier: cAttrName
+    :=: :=
+    expression_list: C.CString(name)
+     call_expression: C.CString(name)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (name)
+       (: (
+       identifier: name
+       ): )
+   defer_statement: defer C.free(unsafe.Pointer(cAttrName))
+    defer: defer
+    call_expression: C.free(unsafe.Pointer(cAttrName))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(cAttrName))
+      (: (
+      call_expression: unsafe.Pointer(cAttrName)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (cAttrName)
+        (: (
+        identifier: cAttrName
+        ): )
+      ): )
+   type_switch_statement: switch value := value.(type) {
+	case string:
+		cstr := C.CString(value)
+		C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+		C.free(unsafe.Pointer(cstr))
+	case []string:
+		size := len(value)
+		list := make([]unsafe.Pointer, size)
+		lens := make([]C.size_t, size)
+		for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+		if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+		for _, s := range list {
+			C.free(s)
+		}
+	case int64:
+		C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+	case []int64:
+		size := len(value)
+		list := make([]C.int64_t, size)
+		for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+	case float32:
+		C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+	case []float32:
+		size := len(value)
+		list := make([]C.float, size)
+		for i, v := range value {
+			list[i] = C.float(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+	case bool:
+		v := C.uchar(0)
+		if value {
+			v = 1
+		}
+		C.TF_SetAttrBool(cdesc, cAttrName, v)
+	case []bool:
+		size := len(value)
+		list := make([]C.uchar, size)
+		for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+		if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+	case DataType:
+		C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+	case []DataType:
+		var list *C.TF_DataType
+		if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+		C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+	case *Tensor:
+		C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case []*Tensor:
+		size := len(value)
+		list := make([]*C.TF_Tensor, size)
+		for i, v := range value {
+			list[i] = v.c
+		}
+		var plist **C.TF_Tensor
+		if size > 0 {
+			plist = &list[0]
+		}
+		C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+	case Shape:
+		ndims := C.int(value.NumDimensions())
+		var dimsp *C.int64_t
+		if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+		C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+	case []Shape:
+		if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+	default:
+		return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+	}
+    switch: switch
+    expression_list: value
+     identifier: value
+    :=: :=
+    identifier: value
+    .: .
+    (: (
+    type: type
+    ): )
+    {: {
+    type_case: case string:
+		cstr := C.CString(value)
+		C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+		C.free(unsafe.Pointer(cstr))
+
+     case: case
+     type_identifier: string
+     :: :
+     short_var_declaration: cstr := C.CString(value)
+      expression_list: cstr
+       identifier: cstr
+      :=: :=
+      expression_list: C.CString(value)
+       call_expression: C.CString(value)
+        selector_expression: C.CString
+         identifier: C
+         .: .
+         field_identifier: CString
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     expression_statement: C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+      call_expression: C.TF_SetAttrString(cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+       selector_expression: C.TF_SetAttrString
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrString
+       argument_list: (cdesc, cAttrName, unsafe.Pointer(cstr), C.size_t(len(value)))
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        call_expression: unsafe.Pointer(cstr)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cstr)
+          (: (
+          identifier: cstr
+          ): )
+        ,: ,
+        call_expression: C.size_t(len(value))
+         selector_expression: C.size_t
+          identifier: C
+          .: .
+          field_identifier: size_t
+         argument_list: (len(value))
+          (: (
+          call_expression: len(value)
+           identifier: len
+           argument_list: (value)
+            (: (
+            identifier: value
+            ): )
+          ): )
+        ): )
+     expression_statement: C.free(unsafe.Pointer(cstr))
+      call_expression: C.free(unsafe.Pointer(cstr))
+       selector_expression: C.free
+        identifier: C
+        .: .
+        field_identifier: free
+       argument_list: (unsafe.Pointer(cstr))
+        (: (
+        call_expression: unsafe.Pointer(cstr)
+         selector_expression: unsafe.Pointer
+          identifier: unsafe
+          .: .
+          field_identifier: Pointer
+         argument_list: (cstr)
+          (: (
+          identifier: cstr
+          ): )
+        ): )
+    type_case: case []string:
+		size := len(value)
+		list := make([]unsafe.Pointer, size)
+		lens := make([]C.size_t, size)
+		for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+		if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+		for _, s := range list {
+			C.free(s)
+		}
+
+     case: case
+     slice_type: []string
+      [: [
+      ]: ]
+      type_identifier: string
+     :: :
+     short_var_declaration: size := len(value)
+      expression_list: size
+       identifier: size
+      :=: :=
+      expression_list: len(value)
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     short_var_declaration: list := make([]unsafe.Pointer, size)
+      expression_list: list
+       identifier: list
+      :=: :=
+      expression_list: make([]unsafe.Pointer, size)
+       call_expression: make([]unsafe.Pointer, size)
+        identifier: make
+        argument_list: ([]unsafe.Pointer, size)
+         (: (
+         slice_type: []unsafe.Pointer
+          [: [
+          ]: ]
+          qualified_type: unsafe.Pointer
+           package_identifier: unsafe
+           .: .
+           type_identifier: Pointer
+         ,: ,
+         identifier: size
+         ): )
+     short_var_declaration: lens := make([]C.size_t, size)
+      expression_list: lens
+       identifier: lens
+      :=: :=
+      expression_list: make([]C.size_t, size)
+       call_expression: make([]C.size_t, size)
+        identifier: make
+        argument_list: ([]C.size_t, size)
+         (: (
+         slice_type: []C.size_t
+          [: [
+          ]: ]
+          qualified_type: C.size_t
+           package_identifier: C
+           .: .
+           type_identifier: size_t
+         ,: ,
+         identifier: size
+         ): )
+     for_statement: for i, s := range value {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+      for: for
+      range_clause: i, s := range value
+       expression_list: i, s
+        identifier: i
+        ,: ,
+        identifier: s
+       :=: :=
+       range: range
+       identifier: value
+      block: {
+			list[i] = unsafe.Pointer(C.CString(s))
+			lens[i] = C.size_t(len(s))
+		}
+       {: {
+       assignment_statement: list[i] = unsafe.Pointer(C.CString(s))
+        expression_list: list[i]
+         index_expression: list[i]
+          identifier: list
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: unsafe.Pointer(C.CString(s))
+         call_expression: unsafe.Pointer(C.CString(s))
+          selector_expression: unsafe.Pointer
+           identifier: unsafe
+           .: .
+           field_identifier: Pointer
+          argument_list: (C.CString(s))
+           (: (
+           call_expression: C.CString(s)
+            selector_expression: C.CString
+             identifier: C
+             .: .
+             field_identifier: CString
+            argument_list: (s)
+             (: (
+             identifier: s
+             ): )
+           ): )
+       assignment_statement: lens[i] = C.size_t(len(s))
+        expression_list: lens[i]
+         index_expression: lens[i]
+          identifier: lens
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: C.size_t(len(s))
+         call_expression: C.size_t(len(s))
+          selector_expression: C.size_t
+           identifier: C
+           .: .
+           field_identifier: size_t
+          argument_list: (len(s))
+           (: (
+           call_expression: len(s)
+            identifier: len
+            argument_list: (s)
+             (: (
+             identifier: s
+             ): )
+           ): )
+       }: }
+     if_statement: if size > 0 {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		} else {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+      if: if
+      binary_expression: size > 0
+       identifier: size
+       >: >
+       int_literal: 0
+      block: {
+			C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+		}
+       {: {
+       expression_statement: C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+        call_expression: C.TF_SetAttrStringList(cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+         selector_expression: C.TF_SetAttrStringList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrStringList
+         argument_list: (cdesc, cAttrName, &list[0], &lens[0], C.int(size))
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          unary_expression: &list[0]
+           &: &
+           index_expression: list[0]
+            identifier: list
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          unary_expression: &lens[0]
+           &: &
+           index_expression: lens[0]
+            identifier: lens
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: C.int(size)
+           selector_expression: C.int
+            identifier: C
+            .: .
+            field_identifier: int
+           argument_list: (size)
+            (: (
+            identifier: size
+            ): )
+          ): )
+       }: }
+      else: else
+      block: {
+			C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+		}
+       {: {
+       expression_statement: C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+        call_expression: C.TF_SetAttrStringList(cdesc, cAttrName, nil, nil, 0)
+         selector_expression: C.TF_SetAttrStringList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrStringList
+         argument_list: (cdesc, cAttrName, nil, nil, 0)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          nil: nil
+          ,: ,
+          nil: nil
+          ,: ,
+          int_literal: 0
+          ): )
+       }: }
+     for_statement: for _, s := range list {
+			C.free(s)
+		}
+      for: for
+      range_clause: _, s := range list
+       expression_list: _, s
+        identifier: _
+        ,: ,
+        identifier: s
+       :=: :=
+       range: range
+       identifier: list
+      block: {
+			C.free(s)
+		}
+       {: {
+       expression_statement: C.free(s)
+        call_expression: C.free(s)
+         selector_expression: C.free
+          identifier: C
+          .: .
+          field_identifier: free
+         argument_list: (s)
+          (: (
+          identifier: s
+          ): )
+       }: }
+    type_case: case int64:
+		C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+
+     case: case
+     type_identifier: int64
+     :: :
+     expression_statement: C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+      call_expression: C.TF_SetAttrInt(cdesc, cAttrName, C.int64_t(value))
+       selector_expression: C.TF_SetAttrInt
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrInt
+       argument_list: (cdesc, cAttrName, C.int64_t(value))
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        call_expression: C.int64_t(value)
+         selector_expression: C.int64_t
+          identifier: C
+          .: .
+          field_identifier: int64_t
+         argument_list: (value)
+          (: (
+          identifier: value
+          ): )
+        ): )
+    type_case: case []int64:
+		size := len(value)
+		list := make([]C.int64_t, size)
+		for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+
+     case: case
+     slice_type: []int64
+      [: [
+      ]: ]
+      type_identifier: int64
+     :: :
+     short_var_declaration: size := len(value)
+      expression_list: size
+       identifier: size
+      :=: :=
+      expression_list: len(value)
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     short_var_declaration: list := make([]C.int64_t, size)
+      expression_list: list
+       identifier: list
+      :=: :=
+      expression_list: make([]C.int64_t, size)
+       call_expression: make([]C.int64_t, size)
+        identifier: make
+        argument_list: ([]C.int64_t, size)
+         (: (
+         slice_type: []C.int64_t
+          [: [
+          ]: ]
+          qualified_type: C.int64_t
+           package_identifier: C
+           .: .
+           type_identifier: int64_t
+         ,: ,
+         identifier: size
+         ): )
+     for_statement: for i, v := range value {
+			list[i] = C.int64_t(v)
+		}
+      for: for
+      range_clause: i, v := range value
+       expression_list: i, v
+        identifier: i
+        ,: ,
+        identifier: v
+       :=: :=
+       range: range
+       identifier: value
+      block: {
+			list[i] = C.int64_t(v)
+		}
+       {: {
+       assignment_statement: list[i] = C.int64_t(v)
+        expression_list: list[i]
+         index_expression: list[i]
+          identifier: list
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: C.int64_t(v)
+         call_expression: C.int64_t(v)
+          selector_expression: C.int64_t
+           identifier: C
+           .: .
+           field_identifier: int64_t
+          argument_list: (v)
+           (: (
+           identifier: v
+           ): )
+       }: }
+     if_statement: if size > 0 {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+      if: if
+      binary_expression: size > 0
+       identifier: size
+       >: >
+       int_literal: 0
+      block: {
+			C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+		}
+       {: {
+       expression_statement: C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+        call_expression: C.TF_SetAttrIntList(cdesc, cAttrName, &list[0], C.int(size))
+         selector_expression: C.TF_SetAttrIntList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrIntList
+         argument_list: (cdesc, cAttrName, &list[0], C.int(size))
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          unary_expression: &list[0]
+           &: &
+           index_expression: list[0]
+            identifier: list
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: C.int(size)
+           selector_expression: C.int
+            identifier: C
+            .: .
+            field_identifier: int
+           argument_list: (size)
+            (: (
+            identifier: size
+            ): )
+          ): )
+       }: }
+      else: else
+      block: {
+			C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+		}
+       {: {
+       expression_statement: C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+        call_expression: C.TF_SetAttrIntList(cdesc, cAttrName, nil, 0)
+         selector_expression: C.TF_SetAttrIntList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrIntList
+         argument_list: (cdesc, cAttrName, nil, 0)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          nil: nil
+          ,: ,
+          int_literal: 0
+          ): )
+       }: }
+    type_case: case float32:
+		C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+
+     case: case
+     type_identifier: float32
+     :: :
+     expression_statement: C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+      call_expression: C.TF_SetAttrFloat(cdesc, cAttrName, C.float(value))
+       selector_expression: C.TF_SetAttrFloat
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrFloat
+       argument_list: (cdesc, cAttrName, C.float(value))
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        call_expression: C.float(value)
+         selector_expression: C.float
+          identifier: C
+          .: .
+          field_identifier: float
+         argument_list: (value)
+          (: (
+          identifier: value
+          ): )
+        ): )
+    type_case: case []float32:
+		size := len(value)
+		list := make([]C.float, size)
+		for i, v := range value {
+			list[i] = C.float(v)
+		}
+		if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+
+     case: case
+     slice_type: []float32
+      [: [
+      ]: ]
+      type_identifier: float32
+     :: :
+     short_var_declaration: size := len(value)
+      expression_list: size
+       identifier: size
+      :=: :=
+      expression_list: len(value)
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     short_var_declaration: list := make([]C.float, size)
+      expression_list: list
+       identifier: list
+      :=: :=
+      expression_list: make([]C.float, size)
+       call_expression: make([]C.float, size)
+        identifier: make
+        argument_list: ([]C.float, size)
+         (: (
+         slice_type: []C.float
+          [: [
+          ]: ]
+          qualified_type: C.float
+           package_identifier: C
+           .: .
+           type_identifier: float
+         ,: ,
+         identifier: size
+         ): )
+     for_statement: for i, v := range value {
+			list[i] = C.float(v)
+		}
+      for: for
+      range_clause: i, v := range value
+       expression_list: i, v
+        identifier: i
+        ,: ,
+        identifier: v
+       :=: :=
+       range: range
+       identifier: value
+      block: {
+			list[i] = C.float(v)
+		}
+       {: {
+       assignment_statement: list[i] = C.float(v)
+        expression_list: list[i]
+         index_expression: list[i]
+          identifier: list
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: C.float(v)
+         call_expression: C.float(v)
+          selector_expression: C.float
+           identifier: C
+           .: .
+           field_identifier: float
+          argument_list: (v)
+           (: (
+           identifier: v
+           ): )
+       }: }
+     if_statement: if size > 0 {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+      if: if
+      binary_expression: size > 0
+       identifier: size
+       >: >
+       int_literal: 0
+      block: {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+		}
+       {: {
+       expression_statement: C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+        call_expression: C.TF_SetAttrFloatList(cdesc, cAttrName, &list[0], C.int(size))
+         selector_expression: C.TF_SetAttrFloatList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrFloatList
+         argument_list: (cdesc, cAttrName, &list[0], C.int(size))
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          unary_expression: &list[0]
+           &: &
+           index_expression: list[0]
+            identifier: list
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: C.int(size)
+           selector_expression: C.int
+            identifier: C
+            .: .
+            field_identifier: int
+           argument_list: (size)
+            (: (
+            identifier: size
+            ): )
+          ): )
+       }: }
+      else: else
+      block: {
+			C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+		}
+       {: {
+       expression_statement: C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+        call_expression: C.TF_SetAttrFloatList(cdesc, cAttrName, nil, 0)
+         selector_expression: C.TF_SetAttrFloatList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrFloatList
+         argument_list: (cdesc, cAttrName, nil, 0)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          nil: nil
+          ,: ,
+          int_literal: 0
+          ): )
+       }: }
+    type_case: case bool:
+		v := C.uchar(0)
+		if value {
+			v = 1
+		}
+		C.TF_SetAttrBool(cdesc, cAttrName, v)
+
+     case: case
+     type_identifier: bool
+     :: :
+     short_var_declaration: v := C.uchar(0)
+      expression_list: v
+       identifier: v
+      :=: :=
+      expression_list: C.uchar(0)
+       call_expression: C.uchar(0)
+        selector_expression: C.uchar
+         identifier: C
+         .: .
+         field_identifier: uchar
+        argument_list: (0)
+         (: (
+         int_literal: 0
+         ): )
+     if_statement: if value {
+			v = 1
+		}
+      if: if
+      identifier: value
+      block: {
+			v = 1
+		}
+       {: {
+       assignment_statement: v = 1
+        expression_list: v
+         identifier: v
+        =: =
+        expression_list: 1
+         int_literal: 1
+       }: }
+     expression_statement: C.TF_SetAttrBool(cdesc, cAttrName, v)
+      call_expression: C.TF_SetAttrBool(cdesc, cAttrName, v)
+       selector_expression: C.TF_SetAttrBool
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrBool
+       argument_list: (cdesc, cAttrName, v)
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        identifier: v
+        ): )
+    type_case: case []bool:
+		size := len(value)
+		list := make([]C.uchar, size)
+		for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+		if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+
+     case: case
+     slice_type: []bool
+      [: [
+      ]: ]
+      type_identifier: bool
+     :: :
+     short_var_declaration: size := len(value)
+      expression_list: size
+       identifier: size
+      :=: :=
+      expression_list: len(value)
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     short_var_declaration: list := make([]C.uchar, size)
+      expression_list: list
+       identifier: list
+      :=: :=
+      expression_list: make([]C.uchar, size)
+       call_expression: make([]C.uchar, size)
+        identifier: make
+        argument_list: ([]C.uchar, size)
+         (: (
+         slice_type: []C.uchar
+          [: [
+          ]: ]
+          qualified_type: C.uchar
+           package_identifier: C
+           .: .
+           type_identifier: uchar
+         ,: ,
+         identifier: size
+         ): )
+     for_statement: for i, v := range value {
+			if v {
+				list[i] = 1
+			}
+		}
+      for: for
+      range_clause: i, v := range value
+       expression_list: i, v
+        identifier: i
+        ,: ,
+        identifier: v
+       :=: :=
+       range: range
+       identifier: value
+      block: {
+			if v {
+				list[i] = 1
+			}
+		}
+       {: {
+       if_statement: if v {
+				list[i] = 1
+			}
+        if: if
+        identifier: v
+        block: {
+				list[i] = 1
+			}
+         {: {
+         assignment_statement: list[i] = 1
+          expression_list: list[i]
+           index_expression: list[i]
+            identifier: list
+            [: [
+            identifier: i
+            ]: ]
+          =: =
+          expression_list: 1
+           int_literal: 1
+         }: }
+       }: }
+     if_statement: if size > 0 {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		} else {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+      if: if
+      binary_expression: size > 0
+       identifier: size
+       >: >
+       int_literal: 0
+      block: {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+		}
+       {: {
+       expression_statement: C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+        call_expression: C.TF_SetAttrBoolList(cdesc, cAttrName, &list[0], C.int(size))
+         selector_expression: C.TF_SetAttrBoolList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrBoolList
+         argument_list: (cdesc, cAttrName, &list[0], C.int(size))
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          unary_expression: &list[0]
+           &: &
+           index_expression: list[0]
+            identifier: list
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: C.int(size)
+           selector_expression: C.int
+            identifier: C
+            .: .
+            field_identifier: int
+           argument_list: (size)
+            (: (
+            identifier: size
+            ): )
+          ): )
+       }: }
+      else: else
+      block: {
+			C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+		}
+       {: {
+       expression_statement: C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+        call_expression: C.TF_SetAttrBoolList(cdesc, cAttrName, nil, 0)
+         selector_expression: C.TF_SetAttrBoolList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrBoolList
+         argument_list: (cdesc, cAttrName, nil, 0)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          nil: nil
+          ,: ,
+          int_literal: 0
+          ): )
+       }: }
+    type_case: case DataType:
+		C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+
+     case: case
+     type_identifier: DataType
+     :: :
+     expression_statement: C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+      call_expression: C.TF_SetAttrType(cdesc, cAttrName, C.TF_DataType(value))
+       selector_expression: C.TF_SetAttrType
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrType
+       argument_list: (cdesc, cAttrName, C.TF_DataType(value))
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        call_expression: C.TF_DataType(value)
+         selector_expression: C.TF_DataType
+          identifier: C
+          .: .
+          field_identifier: TF_DataType
+         argument_list: (value)
+          (: (
+          identifier: value
+          ): )
+        ): )
+    type_case: case []DataType:
+		var list *C.TF_DataType
+		if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+		C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+
+     case: case
+     slice_type: []DataType
+      [: [
+      ]: ]
+      type_identifier: DataType
+     :: :
+     var_declaration: var list *C.TF_DataType
+      var: var
+      var_spec: list *C.TF_DataType
+       identifier: list
+       pointer_type: *C.TF_DataType
+        *: *
+        qualified_type: C.TF_DataType
+         package_identifier: C
+         .: .
+         type_identifier: TF_DataType
+     if_statement: if len(value) > 0 {
+			list = (*C.TF_DataType)(&value[0])
+		}
+      if: if
+      binary_expression: len(value) > 0
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+       >: >
+       int_literal: 0
+      block: {
+			list = (*C.TF_DataType)(&value[0])
+		}
+       {: {
+       assignment_statement: list = (*C.TF_DataType)(&value[0])
+        expression_list: list
+         identifier: list
+        =: =
+        expression_list: (*C.TF_DataType)(&value[0])
+         call_expression: (*C.TF_DataType)(&value[0])
+          parenthesized_expression: (*C.TF_DataType)
+           (: (
+           unary_expression: *C.TF_DataType
+            *: *
+            selector_expression: C.TF_DataType
+             identifier: C
+             .: .
+             field_identifier: TF_DataType
+           ): )
+          argument_list: (&value[0])
+           (: (
+           unary_expression: &value[0]
+            &: &
+            index_expression: value[0]
+             identifier: value
+             [: [
+             int_literal: 0
+             ]: ]
+           ): )
+       }: }
+     expression_statement: C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+      call_expression: C.TF_SetAttrTypeList(cdesc, cAttrName, list, C.int(len(value)))
+       selector_expression: C.TF_SetAttrTypeList
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrTypeList
+       argument_list: (cdesc, cAttrName, list, C.int(len(value)))
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        identifier: list
+        ,: ,
+        call_expression: C.int(len(value))
+         selector_expression: C.int
+          identifier: C
+          .: .
+          field_identifier: int
+         argument_list: (len(value))
+          (: (
+          call_expression: len(value)
+           identifier: len
+           argument_list: (value)
+            (: (
+            identifier: value
+            ): )
+          ): )
+        ): )
+    type_case: case *Tensor:
+		C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+
+     case: case
+     pointer_type: *Tensor
+      *: *
+      type_identifier: Tensor
+     :: :
+     expression_statement: C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+      call_expression: C.TF_SetAttrTensor(cdesc, cAttrName, value.c, status.c)
+       selector_expression: C.TF_SetAttrTensor
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrTensor
+       argument_list: (cdesc, cAttrName, value.c, status.c)
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        selector_expression: value.c
+         identifier: value
+         .: .
+         field_identifier: c
+        ,: ,
+        selector_expression: status.c
+         identifier: status
+         .: .
+         field_identifier: c
+        ): )
+     if_statement: if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+      if: if
+      short_var_declaration: err := status.Err()
+       expression_list: err
+        identifier: err
+       :=: :=
+       expression_list: status.Err()
+        call_expression: status.Err()
+         selector_expression: status.Err
+          identifier: status
+          .: .
+          field_identifier: Err
+         argument_list: ()
+          (: (
+          ): )
+      ;: ;
+      binary_expression: err != nil
+       identifier: err
+       !=: !=
+       nil: nil
+      block: {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+       {: {
+       return_statement: return fmt.Errorf("bad value for attribute %q: %v", name, err)
+        return: return
+        expression_list: fmt.Errorf("bad value for attribute %q: %v", name, err)
+         call_expression: fmt.Errorf("bad value for attribute %q: %v", name, err)
+          selector_expression: fmt.Errorf
+           identifier: fmt
+           .: .
+           field_identifier: Errorf
+          argument_list: ("bad value for attribute %q: %v", name, err)
+           (: (
+           interpreted_string_literal: "bad value for attribute %q: %v"
+            ": "
+            interpreted_string_literal_content: bad value for attribute %q: %v
+            ": "
+           ,: ,
+           identifier: name
+           ,: ,
+           identifier: err
+           ): )
+       }: }
+    type_case: case []*Tensor:
+		size := len(value)
+		list := make([]*C.TF_Tensor, size)
+		for i, v := range value {
+			list[i] = v.c
+		}
+		var plist **C.TF_Tensor
+		if size > 0 {
+			plist = &list[0]
+		}
+		C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+		if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+
+     case: case
+     slice_type: []*Tensor
+      [: [
+      ]: ]
+      pointer_type: *Tensor
+       *: *
+       type_identifier: Tensor
+     :: :
+     short_var_declaration: size := len(value)
+      expression_list: size
+       identifier: size
+      :=: :=
+      expression_list: len(value)
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+     short_var_declaration: list := make([]*C.TF_Tensor, size)
+      expression_list: list
+       identifier: list
+      :=: :=
+      expression_list: make([]*C.TF_Tensor, size)
+       call_expression: make([]*C.TF_Tensor, size)
+        identifier: make
+        argument_list: ([]*C.TF_Tensor, size)
+         (: (
+         slice_type: []*C.TF_Tensor
+          [: [
+          ]: ]
+          pointer_type: *C.TF_Tensor
+           *: *
+           qualified_type: C.TF_Tensor
+            package_identifier: C
+            .: .
+            type_identifier: TF_Tensor
+         ,: ,
+         identifier: size
+         ): )
+     for_statement: for i, v := range value {
+			list[i] = v.c
+		}
+      for: for
+      range_clause: i, v := range value
+       expression_list: i, v
+        identifier: i
+        ,: ,
+        identifier: v
+       :=: :=
+       range: range
+       identifier: value
+      block: {
+			list[i] = v.c
+		}
+       {: {
+       assignment_statement: list[i] = v.c
+        expression_list: list[i]
+         index_expression: list[i]
+          identifier: list
+          [: [
+          identifier: i
+          ]: ]
+        =: =
+        expression_list: v.c
+         selector_expression: v.c
+          identifier: v
+          .: .
+          field_identifier: c
+       }: }
+     var_declaration: var plist **C.TF_Tensor
+      var: var
+      var_spec: plist **C.TF_Tensor
+       identifier: plist
+       pointer_type: **C.TF_Tensor
+        *: *
+        pointer_type: *C.TF_Tensor
+         *: *
+         qualified_type: C.TF_Tensor
+          package_identifier: C
+          .: .
+          type_identifier: TF_Tensor
+     if_statement: if size > 0 {
+			plist = &list[0]
+		}
+      if: if
+      binary_expression: size > 0
+       identifier: size
+       >: >
+       int_literal: 0
+      block: {
+			plist = &list[0]
+		}
+       {: {
+       assignment_statement: plist = &list[0]
+        expression_list: plist
+         identifier: plist
+        =: =
+        expression_list: &list[0]
+         unary_expression: &list[0]
+          &: &
+          index_expression: list[0]
+           identifier: list
+           [: [
+           int_literal: 0
+           ]: ]
+       }: }
+     expression_statement: C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+      call_expression: C.TF_SetAttrTensorList(cdesc, cAttrName, plist, C.int(size), status.c)
+       selector_expression: C.TF_SetAttrTensorList
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrTensorList
+       argument_list: (cdesc, cAttrName, plist, C.int(size), status.c)
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        identifier: plist
+        ,: ,
+        call_expression: C.int(size)
+         selector_expression: C.int
+          identifier: C
+          .: .
+          field_identifier: int
+         argument_list: (size)
+          (: (
+          identifier: size
+          ): )
+        ,: ,
+        selector_expression: status.c
+         identifier: status
+         .: .
+         field_identifier: c
+        ): )
+     if_statement: if err := status.Err(); err != nil {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+      if: if
+      short_var_declaration: err := status.Err()
+       expression_list: err
+        identifier: err
+       :=: :=
+       expression_list: status.Err()
+        call_expression: status.Err()
+         selector_expression: status.Err
+          identifier: status
+          .: .
+          field_identifier: Err
+         argument_list: ()
+          (: (
+          ): )
+      ;: ;
+      binary_expression: err != nil
+       identifier: err
+       !=: !=
+       nil: nil
+      block: {
+			return fmt.Errorf("bad value for attribute %q: %v", name, err)
+		}
+       {: {
+       return_statement: return fmt.Errorf("bad value for attribute %q: %v", name, err)
+        return: return
+        expression_list: fmt.Errorf("bad value for attribute %q: %v", name, err)
+         call_expression: fmt.Errorf("bad value for attribute %q: %v", name, err)
+          selector_expression: fmt.Errorf
+           identifier: fmt
+           .: .
+           field_identifier: Errorf
+          argument_list: ("bad value for attribute %q: %v", name, err)
+           (: (
+           interpreted_string_literal: "bad value for attribute %q: %v"
+            ": "
+            interpreted_string_literal_content: bad value for attribute %q: %v
+            ": "
+           ,: ,
+           identifier: name
+           ,: ,
+           identifier: err
+           ): )
+       }: }
+    type_case: case Shape:
+		ndims := C.int(value.NumDimensions())
+		var dimsp *C.int64_t
+		if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+		C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+
+     case: case
+     type_identifier: Shape
+     :: :
+     short_var_declaration: ndims := C.int(value.NumDimensions())
+      expression_list: ndims
+       identifier: ndims
+      :=: :=
+      expression_list: C.int(value.NumDimensions())
+       call_expression: C.int(value.NumDimensions())
+        selector_expression: C.int
+         identifier: C
+         .: .
+         field_identifier: int
+        argument_list: (value.NumDimensions())
+         (: (
+         call_expression: value.NumDimensions()
+          selector_expression: value.NumDimensions
+           identifier: value
+           .: .
+           field_identifier: NumDimensions
+          argument_list: ()
+           (: (
+           ): )
+         ): )
+     var_declaration: var dimsp *C.int64_t
+      var: var
+      var_spec: dimsp *C.int64_t
+       identifier: dimsp
+       pointer_type: *C.int64_t
+        *: *
+        qualified_type: C.int64_t
+         package_identifier: C
+         .: .
+         type_identifier: int64_t
+     if_statement: if ndims > 0 {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+      if: if
+      binary_expression: ndims > 0
+       identifier: ndims
+       >: >
+       int_literal: 0
+      block: {
+			dims := make([]C.int64_t, ndims)
+			for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+			dimsp = &dims[0]
+		}
+       {: {
+       short_var_declaration: dims := make([]C.int64_t, ndims)
+        expression_list: dims
+         identifier: dims
+        :=: :=
+        expression_list: make([]C.int64_t, ndims)
+         call_expression: make([]C.int64_t, ndims)
+          identifier: make
+          argument_list: ([]C.int64_t, ndims)
+           (: (
+           slice_type: []C.int64_t
+            [: [
+            ]: ]
+            qualified_type: C.int64_t
+             package_identifier: C
+             .: .
+             type_identifier: int64_t
+           ,: ,
+           identifier: ndims
+           ): )
+       for_statement: for i, d := range value.dims {
+				dims[i] = C.int64_t(d)
+			}
+        for: for
+        range_clause: i, d := range value.dims
+         expression_list: i, d
+          identifier: i
+          ,: ,
+          identifier: d
+         :=: :=
+         range: range
+         selector_expression: value.dims
+          identifier: value
+          .: .
+          field_identifier: dims
+        block: {
+				dims[i] = C.int64_t(d)
+			}
+         {: {
+         assignment_statement: dims[i] = C.int64_t(d)
+          expression_list: dims[i]
+           index_expression: dims[i]
+            identifier: dims
+            [: [
+            identifier: i
+            ]: ]
+          =: =
+          expression_list: C.int64_t(d)
+           call_expression: C.int64_t(d)
+            selector_expression: C.int64_t
+             identifier: C
+             .: .
+             field_identifier: int64_t
+            argument_list: (d)
+             (: (
+             identifier: d
+             ): )
+         }: }
+       assignment_statement: dimsp = &dims[0]
+        expression_list: dimsp
+         identifier: dimsp
+        =: =
+        expression_list: &dims[0]
+         unary_expression: &dims[0]
+          &: &
+          index_expression: dims[0]
+           identifier: dims
+           [: [
+           int_literal: 0
+           ]: ]
+       }: }
+     expression_statement: C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+      call_expression: C.TF_SetAttrShape(cdesc, cAttrName, dimsp, ndims)
+       selector_expression: C.TF_SetAttrShape
+        identifier: C
+        .: .
+        field_identifier: TF_SetAttrShape
+       argument_list: (cdesc, cAttrName, dimsp, ndims)
+        (: (
+        identifier: cdesc
+        ,: ,
+        identifier: cAttrName
+        ,: ,
+        identifier: dimsp
+        ,: ,
+        identifier: ndims
+        ): )
+    type_case: case []Shape:
+		if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+
+     case: case
+     slice_type: []Shape
+      [: [
+      ]: ]
+      type_identifier: Shape
+     :: :
+     if_statement: if len(value) == 0 {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		} else {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+      if: if
+      binary_expression: len(value) == 0
+       call_expression: len(value)
+        identifier: len
+        argument_list: (value)
+         (: (
+         identifier: value
+         ): )
+       ==: ==
+       int_literal: 0
+      block: {
+			C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+		}
+       {: {
+       expression_statement: C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+        call_expression: C.TF_SetAttrShapeList(cdesc, cAttrName, nil, nil, 0)
+         selector_expression: C.TF_SetAttrShapeList
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrShapeList
+         argument_list: (cdesc, cAttrName, nil, nil, 0)
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          nil: nil
+          ,: ,
+          nil: nil
+          ,: ,
+          int_literal: 0
+          ): )
+       }: }
+      else: else
+      block: {
+			var flatDims []C.int64_t
+			ndims := make([]C.int, len(value))
+			for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+			var flatDimsp *C.int64_t
+			if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+			C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+		}
+       {: {
+       var_declaration: var flatDims []C.int64_t
+        var: var
+        var_spec: flatDims []C.int64_t
+         identifier: flatDims
+         slice_type: []C.int64_t
+          [: [
+          ]: ]
+          qualified_type: C.int64_t
+           package_identifier: C
+           .: .
+           type_identifier: int64_t
+       short_var_declaration: ndims := make([]C.int, len(value))
+        expression_list: ndims
+         identifier: ndims
+        :=: :=
+        expression_list: make([]C.int, len(value))
+         call_expression: make([]C.int, len(value))
+          identifier: make
+          argument_list: ([]C.int, len(value))
+           (: (
+           slice_type: []C.int
+            [: [
+            ]: ]
+            qualified_type: C.int
+             package_identifier: C
+             .: .
+             type_identifier: int
+           ,: ,
+           call_expression: len(value)
+            identifier: len
+            argument_list: (value)
+             (: (
+             identifier: value
+             ): )
+           ): )
+       for_statement: for i, s := range value {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+        for: for
+        range_clause: i, s := range value
+         expression_list: i, s
+          identifier: i
+          ,: ,
+          identifier: s
+         :=: :=
+         range: range
+         identifier: value
+        block: {
+				nd := s.NumDimensions()
+				ndims[i] = C.int(nd)
+				for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+			}
+         {: {
+         short_var_declaration: nd := s.NumDimensions()
+          expression_list: nd
+           identifier: nd
+          :=: :=
+          expression_list: s.NumDimensions()
+           call_expression: s.NumDimensions()
+            selector_expression: s.NumDimensions
+             identifier: s
+             .: .
+             field_identifier: NumDimensions
+            argument_list: ()
+             (: (
+             ): )
+         assignment_statement: ndims[i] = C.int(nd)
+          expression_list: ndims[i]
+           index_expression: ndims[i]
+            identifier: ndims
+            [: [
+            identifier: i
+            ]: ]
+          =: =
+          expression_list: C.int(nd)
+           call_expression: C.int(nd)
+            selector_expression: C.int
+             identifier: C
+             .: .
+             field_identifier: int
+            argument_list: (nd)
+             (: (
+             identifier: nd
+             ): )
+         for_statement: for _, d := range s.dims {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+          for: for
+          range_clause: _, d := range s.dims
+           expression_list: _, d
+            identifier: _
+            ,: ,
+            identifier: d
+           :=: :=
+           range: range
+           selector_expression: s.dims
+            identifier: s
+            .: .
+            field_identifier: dims
+          block: {
+					flatDims = append(flatDims, C.int64_t(d))
+				}
+           {: {
+           assignment_statement: flatDims = append(flatDims, C.int64_t(d))
+            expression_list: flatDims
+             identifier: flatDims
+            =: =
+            expression_list: append(flatDims, C.int64_t(d))
+             call_expression: append(flatDims, C.int64_t(d))
+              identifier: append
+              argument_list: (flatDims, C.int64_t(d))
+               (: (
+               identifier: flatDims
+               ,: ,
+               call_expression: C.int64_t(d)
+                selector_expression: C.int64_t
+                 identifier: C
+                 .: .
+                 field_identifier: int64_t
+                argument_list: (d)
+                 (: (
+                 identifier: d
+                 ): )
+               ): )
+           }: }
+         }: }
+       var_declaration: var flatDimsp *C.int64_t
+        var: var
+        var_spec: flatDimsp *C.int64_t
+         identifier: flatDimsp
+         pointer_type: *C.int64_t
+          *: *
+          qualified_type: C.int64_t
+           package_identifier: C
+           .: .
+           type_identifier: int64_t
+       if_statement: if len(flatDims) > 0 {
+				flatDimsp = &flatDims[0]
+			}
+        if: if
+        binary_expression: len(flatDims) > 0
+         call_expression: len(flatDims)
+          identifier: len
+          argument_list: (flatDims)
+           (: (
+           identifier: flatDims
+           ): )
+         >: >
+         int_literal: 0
+        block: {
+				flatDimsp = &flatDims[0]
+			}
+         {: {
+         assignment_statement: flatDimsp = &flatDims[0]
+          expression_list: flatDimsp
+           identifier: flatDimsp
+          =: =
+          expression_list: &flatDims[0]
+           unary_expression: &flatDims[0]
+            &: &
+            index_expression: flatDims[0]
+             identifier: flatDims
+             [: [
+             int_literal: 0
+             ]: ]
+         }: }
+       expression_statement: C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+        call_expression: C.TF_SetAttrShapeList_Helper(cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+         selector_expression: C.TF_SetAttrShapeList_Helper
+          identifier: C
+          .: .
+          field_identifier: TF_SetAttrShapeList_Helper
+         argument_list: (cdesc, cAttrName, flatDimsp, &ndims[0], C.int(len(value)))
+          (: (
+          identifier: cdesc
+          ,: ,
+          identifier: cAttrName
+          ,: ,
+          identifier: flatDimsp
+          ,: ,
+          unary_expression: &ndims[0]
+           &: &
+           index_expression: ndims[0]
+            identifier: ndims
+            [: [
+            int_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: C.int(len(value))
+           selector_expression: C.int
+            identifier: C
+            .: .
+            field_identifier: int
+           argument_list: (len(value))
+            (: (
+            call_expression: len(value)
+             identifier: len
+             argument_list: (value)
+              (: (
+              identifier: value
+              ): )
+            ): )
+          ): )
+       }: }
+    default_case: default:
+		return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+
+     default: default
+     :: :
+     return_statement: return fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+      return: return
+      expression_list: fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+       call_expression: fmt.Errorf("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+        selector_expression: fmt.Errorf
+         identifier: fmt
+         .: .
+         field_identifier: Errorf
+        argument_list: ("attribute %q has a type (%T) which is not valid for operation attributes", name, value)
+         (: (
+         interpreted_string_literal: "attribute %q has a type (%T) which is not valid for operation attributes"
+          ": "
+          interpreted_string_literal_content: attribute %q has a type (%T) which is not valid for operation attributes
+          ": "
+         ,: ,
+         identifier: name
+         ,: ,
+         identifier: value
+         ): )
+    }: }
+   return_statement: return nil
+    return: return
+    expression_list: nil
+     nil: nil
+   }: }
+ type_declaration: type LibraryHandler struct {
+	cptr *C.TF_Library
+}
+  type: type
+  type_spec: LibraryHandler struct {
+	cptr *C.TF_Library
+}
+   type_identifier: LibraryHandler
+   struct_type: struct {
+	cptr *C.TF_Library
+}
+    struct: struct
+    field_declaration_list: {
+	cptr *C.TF_Library
+}
+     {: {
+     field_declaration: cptr *C.TF_Library
+      field_identifier: cptr
+      pointer_type: *C.TF_Library
+       *: *
+       qualified_type: C.TF_Library
+        package_identifier: C
+        .: .
+        type_identifier: TF_Library
+     }: }
+ comment: // Load library content into current context, useful to load ops implementation into non-monolithic TF build. Returns LibraryHandler or nil and error
+ function_declaration: func LoadLibrary(path string) (*LibraryHandler, error) {
+	status := newStatus()
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	cptr := C.TF_LoadLibrary(cpath, status.c)
+	if cptr == nil || status.Code() != C.TF_OK {
+		return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+	}
+
+	lh := &LibraryHandler{
+		cptr: cptr,
+	}
+
+	runtime.SetFinalizer(lh, (*LibraryHandler).free)
+	return lh, nil
+}
+  func: func
+  identifier: LoadLibrary
+  parameter_list: (path string)
+   (: (
+   parameter_declaration: path string
+    identifier: path
+    type_identifier: string
+   ): )
+  parameter_list: (*LibraryHandler, error)
+   (: (
+   parameter_declaration: *LibraryHandler
+    pointer_type: *LibraryHandler
+     *: *
+     type_identifier: LibraryHandler
+   ,: ,
+   parameter_declaration: error
+    type_identifier: error
+   ): )
+  block: {
+	status := newStatus()
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	cptr := C.TF_LoadLibrary(cpath, status.c)
+	if cptr == nil || status.Code() != C.TF_OK {
+		return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+	}
+
+	lh := &LibraryHandler{
+		cptr: cptr,
+	}
+
+	runtime.SetFinalizer(lh, (*LibraryHandler).free)
+	return lh, nil
+}
+   {: {
+   short_var_declaration: status := newStatus()
+    expression_list: status
+     identifier: status
+    :=: :=
+    expression_list: newStatus()
+     call_expression: newStatus()
+      identifier: newStatus
+      argument_list: ()
+       (: (
+       ): )
+   short_var_declaration: cpath := C.CString(path)
+    expression_list: cpath
+     identifier: cpath
+    :=: :=
+    expression_list: C.CString(path)
+     call_expression: C.CString(path)
+      selector_expression: C.CString
+       identifier: C
+       .: .
+       field_identifier: CString
+      argument_list: (path)
+       (: (
+       identifier: path
+       ): )
+   defer_statement: defer C.free(unsafe.Pointer(cpath))
+    defer: defer
+    call_expression: C.free(unsafe.Pointer(cpath))
+     selector_expression: C.free
+      identifier: C
+      .: .
+      field_identifier: free
+     argument_list: (unsafe.Pointer(cpath))
+      (: (
+      call_expression: unsafe.Pointer(cpath)
+       selector_expression: unsafe.Pointer
+        identifier: unsafe
+        .: .
+        field_identifier: Pointer
+       argument_list: (cpath)
+        (: (
+        identifier: cpath
+        ): )
+      ): )
+   short_var_declaration: cptr := C.TF_LoadLibrary(cpath, status.c)
+    expression_list: cptr
+     identifier: cptr
+    :=: :=
+    expression_list: C.TF_LoadLibrary(cpath, status.c)
+     call_expression: C.TF_LoadLibrary(cpath, status.c)
+      selector_expression: C.TF_LoadLibrary
+       identifier: C
+       .: .
+       field_identifier: TF_LoadLibrary
+      argument_list: (cpath, status.c)
+       (: (
+       identifier: cpath
+       ,: ,
+       selector_expression: status.c
+        identifier: status
+        .: .
+        field_identifier: c
+       ): )
+   if_statement: if cptr == nil || status.Code() != C.TF_OK {
+		return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+	}
+    if: if
+    binary_expression: cptr == nil || status.Code() != C.TF_OK
+     binary_expression: cptr == nil
+      identifier: cptr
+      ==: ==
+      nil: nil
+     ||: ||
+     binary_expression: status.Code() != C.TF_OK
+      call_expression: status.Code()
+       selector_expression: status.Code
+        identifier: status
+        .: .
+        field_identifier: Code
+       argument_list: ()
+        (: (
+        ): )
+      !=: !=
+      selector_expression: C.TF_OK
+       identifier: C
+       .: .
+       field_identifier: TF_OK
+    block: {
+		return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+	}
+     {: {
+     return_statement: return nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+      return: return
+      expression_list: nil, fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+       nil: nil
+       ,: ,
+       call_expression: fmt.Errorf("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+        selector_expression: fmt.Errorf
+         identifier: fmt
+         .: .
+         field_identifier: Errorf
+        argument_list: ("could not load library %s: code: %d, error: %s", path, status.Code(), status.String())
+         (: (
+         interpreted_string_literal: "could not load library %s: code: %d, error: %s"
+          ": "
+          interpreted_string_literal_content: could not load library %s: code: %d, error: %s
+          ": "
+         ,: ,
+         identifier: path
+         ,: ,
+         call_expression: status.Code()
+          selector_expression: status.Code
+           identifier: status
+           .: .
+           field_identifier: Code
+          argument_list: ()
+           (: (
+           ): )
+         ,: ,
+         call_expression: status.String()
+          selector_expression: status.String
+           identifier: status
+           .: .
+           field_identifier: String
+          argument_list: ()
+           (: (
+           ): )
+         ): )
+     }: }
+   short_var_declaration: lh := &LibraryHandler{
+		cptr: cptr,
+	}
+    expression_list: lh
+     identifier: lh
+    :=: :=
+    expression_list: &LibraryHandler{
+		cptr: cptr,
+	}
+     unary_expression: &LibraryHandler{
+		cptr: cptr,
+	}
+      &: &
+      composite_literal: LibraryHandler{
+		cptr: cptr,
+	}
+       type_identifier: LibraryHandler
+       literal_value: {
+		cptr: cptr,
+	}
+        {: {
+        keyed_element: cptr: cptr
+         literal_element: cptr
+          identifier: cptr
+         :: :
+         literal_element: cptr
+          identifier: cptr
+        ,: ,
+        }: }
+   expression_statement: runtime.SetFinalizer(lh, (*LibraryHandler).free)
+    call_expression: runtime.SetFinalizer(lh, (*LibraryHandler).free)
+     selector_expression: runtime.SetFinalizer
+      identifier: runtime
+      .: .
+      field_identifier: SetFinalizer
+     argument_list: (lh, (*LibraryHandler).free)
+      (: (
+      identifier: lh
+      ,: ,
+      selector_expression: (*LibraryHandler).free
+       parenthesized_expression: (*LibraryHandler)
+        (: (
+        unary_expression: *LibraryHandler
+         *: *
+         identifier: LibraryHandler
+        ): )
+       .: .
+       field_identifier: free
+      ): )
+   return_statement: return lh, nil
+    return: return
+    expression_list: lh, nil
+     identifier: lh
+     ,: ,
+     nil: nil
+   }: }
+ method_declaration: func (lh *LibraryHandler) free() {
+	if lh == nil || lh.cptr == nil {
+		return
+	}
+
+	C.TF_DeleteLibraryHandle(lh.cptr)
+}
+  func: func
+  parameter_list: (lh *LibraryHandler)
+   (: (
+   parameter_declaration: lh *LibraryHandler
+    identifier: lh
+    pointer_type: *LibraryHandler
+     *: *
+     type_identifier: LibraryHandler
+   ): )
+  field_identifier: free
+  parameter_list: ()
+   (: (
+   ): )
+  block: {
+	if lh == nil || lh.cptr == nil {
+		return
+	}
+
+	C.TF_DeleteLibraryHandle(lh.cptr)
+}
+   {: {
+   if_statement: if lh == nil || lh.cptr == nil {
+		return
+	}
+    if: if
+    binary_expression: lh == nil || lh.cptr == nil
+     binary_expression: lh == nil
+      identifier: lh
+      ==: ==
+      nil: nil
+     ||: ||
+     binary_expression: lh.cptr == nil
+      selector_expression: lh.cptr
+       identifier: lh
+       .: .
+       field_identifier: cptr
+      ==: ==
+      nil: nil
+    block: {
+		return
+	}
+     {: {
+     return_statement: return
+      return: return
+     }: }
+   expression_statement: C.TF_DeleteLibraryHandle(lh.cptr)
+    call_expression: C.TF_DeleteLibraryHandle(lh.cptr)
+     selector_expression: C.TF_DeleteLibraryHandle
+      identifier: C
+      .: .
+      field_identifier: TF_DeleteLibraryHandle
+     argument_list: (lh.cptr)
+      (: (
+      selector_expression: lh.cptr
+       identifier: lh
+       .: .
+       field_identifier: cptr
+      ): )
+   }: }

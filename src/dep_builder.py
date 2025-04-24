@@ -3,7 +3,7 @@ from tree_sitter import Language, Parser
 from tree_sitter import Tree as ASTree
 from tree_sitter import Node as ASTNode
 import tree_sitter_python as tspython
-from graphs import FileDepGraph
+from graphs import DepGraph
 from dotenv import load_dotenv
 import trees 
 from import_resolve import ImportTarget, ExternalDepResolver
@@ -18,7 +18,7 @@ PYTHON_LANGUAGE = Language(tspython.language())
 class DepBuilder:
     def __init__(self, source_set: set[str], root_directory: str):
         self.source_set: set[str] = source_set
-        self.dependency_graph: FileDepGraph = FileDepGraph()
+        self.dependency_graph: DepGraph = DepGraph()
         self.parser: Parser = Parser(PYTHON_LANGUAGE)
         self.visited: set[str] = set()
         self.root_directory: str = root_directory  
@@ -74,7 +74,7 @@ class DepBuilder:
         self.dep.log_unresolved_imports()
 
     
-    def build_dependency_graph(self) -> FileDepGraph:
+    def build_dependency_graph(self) -> DepGraph:
         """Build the source file dependency graph."""
         for file_path in self.source_set:
             if file_path not in self.visited:

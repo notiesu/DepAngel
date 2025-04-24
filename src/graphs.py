@@ -1,7 +1,7 @@
 from graphviz import Digraph
 import matplotlib.pyplot as plt
 
-class FileDepGraph:
+class DepGraph:
     def __init__(self):
         self.dependencies: dict[str, set[str]] = {} # Maps a file to its dependencies - str
         self.dependents: dict[str, set[str]] = {}   # Maps a file to its dependents

@@ -1,0 +1,123 @@
+{
+  "type": "object",
+  "properties": {
+    "function": {
+      "type": "object",
+      "properties": {
+        "def_keyword": {
+          "type": "string"
+        },
+        "name_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "args_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "return_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "calls_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "class_deps_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "def_keyword",
+        "name_path",
+        "args_path",
+        "return_path",
+        "calls_path",
+        "class_deps_path"
+      ]
+    },
+    "class": {
+      "type": "object",
+      "properties": {
+        "def_keyword": {
+          "type": "string"
+        },
+        "name_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "base_classes_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "init_args_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "methods_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "attributes_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "def_keyword",
+        "name_path",
+        "base_classes_path",
+        "init_args_path",
+        "methods_path",
+        "attributes_path"
+      ]
+    },
+    "import": {
+      "type": "object",
+      "properties": {
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "module_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "keywords",
+        "module_path"
+      ]
+    }
+  },
+  "required": [
+    "function",
+    "class",
+    "import"
+  ]
+}

@@ -1,0 +1,528 @@
+module: # Base tree
+class TreeNode:
+    def __init__(self, value, parent=None):
+        self.value = value
+        self.parent = parent
+        self.children = []
+
+    def add_child(self, child_node):
+        child_node.parent = self
+        self.children.append(child_node)
+
+    def remove_child(self, child_node):
+        self.children = [child for child in self.children if child != child_node]
+
+    def traverse(self, depth=0):
+        #incorporate tabbing
+        print("\t" * depth, end="")
+        print(self.value)
+        for child in self.children:
+            child.traverse(depth + 1)
+
+class Tree:
+    def __init__(self, root_node: str):
+        self.root = TreeNode(root_node)
+
+    def traverse(self):
+        self.root.traverse()
+
+    def add_node(self, parent_node, child_node):
+        parent_node.add_child(child_node)
+
+    def remove_node(self, parent_node, child_node):
+        parent_node.remove_child(child_node)
+
+# inheriting trees
+
+class DirFileNode(TreeNode):
+    def __init__(self, value, parent=None, isFile=False):
+        super().__init__(value, parent)
+        self.isFile = isFile
+
+# Directory Tree - Using DirectoryNode
+class DirFileTree:
+    def __init__(self, root_value):
+        self.root = DirFileNode(root_value)
+        self.tree = Tree(self.root)
+        
+
+ comment: # Base tree
+ class_definition: class TreeNode:
+    def __init__(self, value, parent=None):
+        self.value = value
+        self.parent = parent
+        self.children = []
+
+    def add_child(self, child_node):
+        child_node.parent = self
+        self.children.append(child_node)
+
+    def remove_child(self, child_node):
+        self.children = [child for child in self.children if child != child_node]
+
+    def traverse(self, depth=0):
+        #incorporate tabbing
+        print("\t" * depth, end="")
+        print(self.value)
+        for child in self.children:
+            child.traverse(depth + 1)
+  class: class
+  identifier: TreeNode
+  :: :
+  block: def __init__(self, value, parent=None):
+        self.value = value
+        self.parent = parent
+        self.children = []
+
+    def add_child(self, child_node):
+        child_node.parent = self
+        self.children.append(child_node)
+
+    def remove_child(self, child_node):
+        self.children = [child for child in self.children if child != child_node]
+
+    def traverse(self, depth=0):
+        #incorporate tabbing
+        print("\t" * depth, end="")
+        print(self.value)
+        for child in self.children:
+            child.traverse(depth + 1)
+   function_definition: def __init__(self, value, parent=None):
+        self.value = value
+        self.parent = parent
+        self.children = []
+    def: def
+    identifier: __init__
+    parameters: (self, value, parent=None)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: value
+     ,: ,
+     default_parameter: parent=None
+      identifier: parent
+      =: =
+      none: None
+     ): )
+    :: :
+    block: self.value = value
+        self.parent = parent
+        self.children = []
+     expression_statement: self.value = value
+      assignment: self.value = value
+       attribute: self.value
+        identifier: self
+        .: .
+        identifier: value
+       =: =
+       identifier: value
+     expression_statement: self.parent = parent
+      assignment: self.parent = parent
+       attribute: self.parent
+        identifier: self
+        .: .
+        identifier: parent
+       =: =
+       identifier: parent
+     expression_statement: self.children = []
+      assignment: self.children = []
+       attribute: self.children
+        identifier: self
+        .: .
+        identifier: children
+       =: =
+       list: []
+        [: [
+        ]: ]
+   function_definition: def add_child(self, child_node):
+        child_node.parent = self
+        self.children.append(child_node)
+    def: def
+    identifier: add_child
+    parameters: (self, child_node)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: child_node
+     ): )
+    :: :
+    block: child_node.parent = self
+        self.children.append(child_node)
+     expression_statement: child_node.parent = self
+      assignment: child_node.parent = self
+       attribute: child_node.parent
+        identifier: child_node
+        .: .
+        identifier: parent
+       =: =
+       identifier: self
+     expression_statement: self.children.append(child_node)
+      call: self.children.append(child_node)
+       attribute: self.children.append
+        attribute: self.children
+         identifier: self
+         .: .
+         identifier: children
+        .: .
+        identifier: append
+       argument_list: (child_node)
+        (: (
+        identifier: child_node
+        ): )
+   function_definition: def remove_child(self, child_node):
+        self.children = [child for child in self.children if child != child_node]
+    def: def
+    identifier: remove_child
+    parameters: (self, child_node)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: child_node
+     ): )
+    :: :
+    block: self.children = [child for child in self.children if child != child_node]
+     expression_statement: self.children = [child for child in self.children if child != child_node]
+      assignment: self.children = [child for child in self.children if child != child_node]
+       attribute: self.children
+        identifier: self
+        .: .
+        identifier: children
+       =: =
+       list_comprehension: [child for child in self.children if child != child_node]
+        [: [
+        identifier: child
+        for_in_clause: for child in self.children
+         for: for
+         identifier: child
+         in: in
+         attribute: self.children
+          identifier: self
+          .: .
+          identifier: children
+        if_clause: if child != child_node
+         if: if
+         comparison_operator: child != child_node
+          identifier: child
+          !=: !=
+          identifier: child_node
+        ]: ]
+   function_definition: def traverse(self, depth=0):
+        #incorporate tabbing
+        print("\t" * depth, end="")
+        print(self.value)
+        for child in self.children:
+            child.traverse(depth + 1)
+    def: def
+    identifier: traverse
+    parameters: (self, depth=0)
+     (: (
+     identifier: self
+     ,: ,
+     default_parameter: depth=0
+      identifier: depth
+      =: =
+      integer: 0
+     ): )
+    :: :
+    comment: #incorporate tabbing
+    block: print("\t" * depth, end="")
+        print(self.value)
+        for child in self.children:
+            child.traverse(depth + 1)
+     expression_statement: print("\t" * depth, end="")
+      call: print("\t" * depth, end="")
+       identifier: print
+       argument_list: ("\t" * depth, end="")
+        (: (
+        binary_operator: "\t" * depth
+         string: "\t"
+          string_start: "
+          string_content: \t
+           escape_sequence: \t
+          string_end: "
+         *: *
+         identifier: depth
+        ,: ,
+        keyword_argument: end=""
+         identifier: end
+         =: =
+         string: ""
+          string_start: "
+          string_end: "
+        ): )
+     expression_statement: print(self.value)
+      call: print(self.value)
+       identifier: print
+       argument_list: (self.value)
+        (: (
+        attribute: self.value
+         identifier: self
+         .: .
+         identifier: value
+        ): )
+     for_statement: for child in self.children:
+            child.traverse(depth + 1)
+      for: for
+      identifier: child
+      in: in
+      attribute: self.children
+       identifier: self
+       .: .
+       identifier: children
+      :: :
+      block: child.traverse(depth + 1)
+       expression_statement: child.traverse(depth + 1)
+        call: child.traverse(depth + 1)
+         attribute: child.traverse
+          identifier: child
+          .: .
+          identifier: traverse
+         argument_list: (depth + 1)
+          (: (
+          binary_operator: depth + 1
+           identifier: depth
+           +: +
+           integer: 1
+          ): )
+ class_definition: class Tree:
+    def __init__(self, root_node: str):
+        self.root = TreeNode(root_node)
+
+    def traverse(self):
+        self.root.traverse()
+
+    def add_node(self, parent_node, child_node):
+        parent_node.add_child(child_node)
+
+    def remove_node(self, parent_node, child_node):
+        parent_node.remove_child(child_node)
+  class: class
+  identifier: Tree
+  :: :
+  block: def __init__(self, root_node: str):
+        self.root = TreeNode(root_node)
+
+    def traverse(self):
+        self.root.traverse()
+
+    def add_node(self, parent_node, child_node):
+        parent_node.add_child(child_node)
+
+    def remove_node(self, parent_node, child_node):
+        parent_node.remove_child(child_node)
+   function_definition: def __init__(self, root_node: str):
+        self.root = TreeNode(root_node)
+    def: def
+    identifier: __init__
+    parameters: (self, root_node: str)
+     (: (
+     identifier: self
+     ,: ,
+     typed_parameter: root_node: str
+      identifier: root_node
+      :: :
+      type: str
+       identifier: str
+     ): )
+    :: :
+    block: self.root = TreeNode(root_node)
+     expression_statement: self.root = TreeNode(root_node)
+      assignment: self.root = TreeNode(root_node)
+       attribute: self.root
+        identifier: self
+        .: .
+        identifier: root
+       =: =
+       call: TreeNode(root_node)
+        identifier: TreeNode
+        argument_list: (root_node)
+         (: (
+         identifier: root_node
+         ): )
+   function_definition: def traverse(self):
+        self.root.traverse()
+    def: def
+    identifier: traverse
+    parameters: (self)
+     (: (
+     identifier: self
+     ): )
+    :: :
+    block: self.root.traverse()
+     expression_statement: self.root.traverse()
+      call: self.root.traverse()
+       attribute: self.root.traverse
+        attribute: self.root
+         identifier: self
+         .: .
+         identifier: root
+        .: .
+        identifier: traverse
+       argument_list: ()
+        (: (
+        ): )
+   function_definition: def add_node(self, parent_node, child_node):
+        parent_node.add_child(child_node)
+    def: def
+    identifier: add_node
+    parameters: (self, parent_node, child_node)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: parent_node
+     ,: ,
+     identifier: child_node
+     ): )
+    :: :
+    block: parent_node.add_child(child_node)
+     expression_statement: parent_node.add_child(child_node)
+      call: parent_node.add_child(child_node)
+       attribute: parent_node.add_child
+        identifier: parent_node
+        .: .
+        identifier: add_child
+       argument_list: (child_node)
+        (: (
+        identifier: child_node
+        ): )
+   function_definition: def remove_node(self, parent_node, child_node):
+        parent_node.remove_child(child_node)
+    def: def
+    identifier: remove_node
+    parameters: (self, parent_node, child_node)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: parent_node
+     ,: ,
+     identifier: child_node
+     ): )
+    :: :
+    block: parent_node.remove_child(child_node)
+     expression_statement: parent_node.remove_child(child_node)
+      call: parent_node.remove_child(child_node)
+       attribute: parent_node.remove_child
+        identifier: parent_node
+        .: .
+        identifier: remove_child
+       argument_list: (child_node)
+        (: (
+        identifier: child_node
+        ): )
+ comment: # inheriting trees
+ class_definition: class DirFileNode(TreeNode):
+    def __init__(self, value, parent=None, isFile=False):
+        super().__init__(value, parent)
+        self.isFile = isFile
+  class: class
+  identifier: DirFileNode
+  argument_list: (TreeNode)
+   (: (
+   identifier: TreeNode
+   ): )
+  :: :
+  block: def __init__(self, value, parent=None, isFile=False):
+        super().__init__(value, parent)
+        self.isFile = isFile
+   function_definition: def __init__(self, value, parent=None, isFile=False):
+        super().__init__(value, parent)
+        self.isFile = isFile
+    def: def
+    identifier: __init__
+    parameters: (self, value, parent=None, isFile=False)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: value
+     ,: ,
+     default_parameter: parent=None
+      identifier: parent
+      =: =
+      none: None
+     ,: ,
+     default_parameter: isFile=False
+      identifier: isFile
+      =: =
+      false: False
+     ): )
+    :: :
+    block: super().__init__(value, parent)
+        self.isFile = isFile
+     expression_statement: super().__init__(value, parent)
+      call: super().__init__(value, parent)
+       attribute: super().__init__
+        call: super()
+         identifier: super
+         argument_list: ()
+          (: (
+          ): )
+        .: .
+        identifier: __init__
+       argument_list: (value, parent)
+        (: (
+        identifier: value
+        ,: ,
+        identifier: parent
+        ): )
+     expression_statement: self.isFile = isFile
+      assignment: self.isFile = isFile
+       attribute: self.isFile
+        identifier: self
+        .: .
+        identifier: isFile
+       =: =
+       identifier: isFile
+ comment: # Directory Tree - Using DirectoryNode
+ class_definition: class DirFileTree:
+    def __init__(self, root_value):
+        self.root = DirFileNode(root_value)
+        self.tree = Tree(self.root)
+  class: class
+  identifier: DirFileTree
+  :: :
+  block: def __init__(self, root_value):
+        self.root = DirFileNode(root_value)
+        self.tree = Tree(self.root)
+   function_definition: def __init__(self, root_value):
+        self.root = DirFileNode(root_value)
+        self.tree = Tree(self.root)
+    def: def
+    identifier: __init__
+    parameters: (self, root_value)
+     (: (
+     identifier: self
+     ,: ,
+     identifier: root_value
+     ): )
+    :: :
+    block: self.root = DirFileNode(root_value)
+        self.tree = Tree(self.root)
+     expression_statement: self.root = DirFileNode(root_value)
+      assignment: self.root = DirFileNode(root_value)
+       attribute: self.root
+        identifier: self
+        .: .
+        identifier: root
+       =: =
+       call: DirFileNode(root_value)
+        identifier: DirFileNode
+        argument_list: (root_value)
+         (: (
+         identifier: root_value
+         ): )
+     expression_statement: self.tree = Tree(self.root)
+      assignment: self.tree = Tree(self.root)
+       attribute: self.tree
+        identifier: self
+        .: .
+        identifier: tree
+       =: =
+       call: Tree(self.root)
+        identifier: Tree
+        argument_list: (self.root)
+         (: (
+         attribute: self.root
+          identifier: self
+          .: .
+          identifier: root
+         ): )
