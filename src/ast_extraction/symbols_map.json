@@ -5,7 +5,7 @@
         "name_path": ["identifier"],
         "args_path": ["parameters"],
         "return_path": ["return_statement"],
-        "calls_path": ["block", "**", "call"],
+        "calls_path": ["block", "**", "call", "**", "identifier"],
         "class_deps_path": []
       },
       "class": {
