@@ -38,7 +38,7 @@ class SymbolParser:
         self.classes_map: Dict[str, ClassSymbol] = {}
         self.dependency_graph: DepGraph = DepGraph()
 
-
+        #TODO: functions_map will have to include class methods identified by base class
         #load the language map
         if not SymbolParser.language_map:
             with open(SYMBOLS_MAP_PATH, "r") as file:
@@ -64,7 +64,6 @@ class SymbolParser:
             #validate the schema
             try:
                 validate(instance=self.symbol_paths, schema=self.valid_schema)
-                print(f"Validation successful for {language} symbols map.")
             except ValidationError as e:
                 print(f"Validation error: {e.message}")
                 raise
@@ -80,12 +79,17 @@ class SymbolParser:
             file_contents = file.read()
             SymbolParser.valid_schema = json.loads(file_contents)
 
-    def _follow_path(self, curr_node: ASTNode, path: List[str], ind: int, results: Set[str]) -> None:
+    def _follow_path(self, curr_node: ASTNode, path: List[str], ind: int, results: Set[str],
+                     collect_nodes: bool = False, nodes: Optional[dict[str, ASTNode]] = None) -> None:
         # Input - path (arr[str]) outlined in the symbol_paths 
         # Output - 
         #approach - recurse when wildcard, otherwise check if node type matches, move ind. Base when ind == len(path)
+        if (collect_nodes and not nodes):
+            raise ValueError("Supply a mutable dict to collect nodes.")
         if (ind == len(path)):
             results.add(curr_node.text.decode("utf-8"))
+            if (collect_nodes):
+                nodes[curr_node.text.decode("utf-8")] = curr_node
             return
         node_type = curr_node.type
         for child in curr_node.children:
@@ -113,7 +117,16 @@ class SymbolParser:
         names = set()
         self._follow_path(node, self.symbol_paths["function"]["name_path"], 0, names)
         symbol.name = next(iter(names))
-        self._follow_path(node, self.symbol_paths["class"]["methods_path"], 0, symbol.methods)
+        methodsToParse = {}
+        self._follow_path(node, self.symbol_paths["class"]["methods_path"], 0, symbol.methods, True, methodsToParse)
+        for method in methodsToParse:
+            #qualified name with class name
+            methodID = f"{symbol.name}.{method}"
+            funcsym = FunctionSymbol()
+            #Retraverse tree to get method node
+            self._populate_func_symbol(funcsym, methodsToParse[method])
+            self.functions_map[methodID] = funcsym
+            self.functions.add(methodID)
         self._follow_path(node, self.symbol_paths["class"]["attributes_path"], 0, symbol.attributes)
         self._follow_path(node, self.symbol_paths["class"]["base_classes_path"], 0, symbol.base_classes)
         #self._follow_path(node, self.symbol_paths["class"]["init_args_path"], 0, symbol.init_args)
@@ -135,6 +148,7 @@ class SymbolParser:
             self._populate_class_symbol(sym, node)
             self.classes_map[sym.name] = sym
             self.classes.add(sym.name)
+            #add methods to the function map
 
         # Recurse into children
         if cursor.goto_first_child():

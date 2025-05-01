@@ -1,15 +1,18 @@
 import os
-import trees
+from .. import trees
 
 #input - directory
 #otuput - directory tree, source file dependency tree
 #approach - crawl through directories first, then use the output to build source trees
 
+#TODO: We can make this cleaner, but for now we'll use a list of supported extensions
+SUPPORTED_EXTENSIONS = set([".py", ".cpp", ".c", ".cc"])
 class Crawler:
     def __init__(self, root_directory):
         self.root_directory = root_directory
         self.directory_tree = trees.DirFileTree(root_directory)
-        self.source_set = set()
+        #bucket the source set by extension
+        self.source_dict: dict[str, set] = {}
     
     def _build_tree_recursively(self, current_path, current_node):
         for entry in os.listdir(current_path):
@@ -22,8 +25,11 @@ class Crawler:
             else:
                 new_node = trees.DirFileNode(entry_path, parent=current_node, isFile=True)
                 # add to source set if extension is .py
-                if entry.endswith('.py'):
-                    self.source_set.add(entry_path)
+                ext = os.path.splitext(entry)[1]
+                if ext in SUPPORTED_EXTENSIONS:
+                    if ext not in self.source_dict:
+                        self.source_dict[ext] = set()
+                    self.source_dict[ext].add(entry_path)
                 current_node.add_child(new_node)
 
     def build_directory_tree(self):

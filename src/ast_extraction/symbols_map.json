@@ -20,6 +20,28 @@
         "keywords": ["import_statement", "from_import"],
         "module_path": ["module"]
       }
-    }
-  }
+    },
+    "cpp": {
+        "function": {
+          "def_keyword": "function_definition",
+          "name_path": ["**", "function_declarator", "identifier"],
+          "args_path": [ "function_declarator","parameter_list", "parameter_declaration"],
+          "return_path": ["return_statement", "identifier"],
+          "calls_path": ["**", "call_expression"],
+          "class_deps_path": ["**", "type_identifier"]
+        },
+        "class": {
+          "def_keyword": "class_specifier",
+          "name_path": ["type_identifier"],
+          "base_classes_path": ["base_class_clause", "qualified_identifier"],
+          "init_args_path": [],
+          "methods_path": ["field_declaration_list", "function_definition"],
+          "attributes_path": ["field_declaration_list", "field_declaration"]
+        },
+        "import": {
+          "keywords": ["import_statement", "from_import"],
+          "module_path": ["module"]
+        }
+      }
+}
   

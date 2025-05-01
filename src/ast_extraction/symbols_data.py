@@ -6,10 +6,9 @@ from typing import Optional, Set, Dict
 class GenSymbol:
     name: str = ""
 
-
 @dataclass
 class FunctionSymbol(GenSymbol):
-    args: Set[str] = field(default_factory=set)  #TODO:arg_namer to type dict?
+    args: Set[str] = field(default_factory=set)  
     calls: Set[str] = field(default_factory=set)
     class_deps: Set[str] = field(default_factory=set)
     return_type: Optional[str] = None

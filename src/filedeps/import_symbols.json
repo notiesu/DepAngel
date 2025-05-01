@@ -1,0 +1,4 @@
+{
+    "python": ["import_statement", "import_from_statement"],
+    "cpp": ["preproc_include"]
+}

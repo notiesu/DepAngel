@@ -1,0 +1,5131 @@
+translation_unit: /* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#define EIGEN_USE_THREADS
+
+#include "tensorflow/cc/client/client_session.h"
+
+#include <utility>
+#include <vector>
+
+#include "absl/synchronization/barrier.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/lib/core/threadpool.h"
+#include "tensorflow/core/lib/core/threadpool_options.h"
+#include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/util/work_sharder.h"
+
+namespace tensorflow {
+namespace {
+
+using ops::Add;
+using ops::BatchMatMul;
+using ops::Const;
+using ops::Mul;
+using ops::Placeholder;
+using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+
+class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+};
+
+TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+
+TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+
+TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+
+TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+
+}  // namespace
+}  // namespace tensorflow
+
+ comment: /* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+ preproc_def: #define EIGEN_USE_THREADS
+
+  #define: #define
+  identifier: EIGEN_USE_THREADS
+ preproc_include: #include "tensorflow/cc/client/client_session.h"
+
+  #include: #include
+  string_literal: "tensorflow/cc/client/client_session.h"
+   ": "
+   string_content: tensorflow/cc/client/client_session.h
+   ": "
+ preproc_include: #include <utility>
+
+  #include: #include
+  system_lib_string: <utility>
+ preproc_include: #include <vector>
+
+  #include: #include
+  system_lib_string: <vector>
+ preproc_include: #include "absl/synchronization/barrier.h"
+
+  #include: #include
+  string_literal: "absl/synchronization/barrier.h"
+   ": "
+   string_content: absl/synchronization/barrier.h
+   ": "
+ preproc_include: #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+
+  #include: #include
+  string_literal: "unsupported/Eigen/CXX11/Tensor"
+   ": "
+   string_content: unsupported/Eigen/CXX11/Tensor
+   ": "
+  comment: // from @eigen_archive
+ preproc_include: #include "tensorflow/cc/ops/standard_ops.h"
+
+  #include: #include
+  string_literal: "tensorflow/cc/ops/standard_ops.h"
+   ": "
+   string_content: tensorflow/cc/ops/standard_ops.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/tensor_testutil.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/tensor_testutil.h"
+   ": "
+   string_content: tensorflow/core/framework/tensor_testutil.h
+   ": "
+ preproc_include: #include "tensorflow/core/lib/core/status_test_util.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/lib/core/status_test_util.h"
+   ": "
+   string_content: tensorflow/core/lib/core/status_test_util.h
+   ": "
+ preproc_include: #include "tensorflow/core/lib/core/threadpool.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/lib/core/threadpool.h"
+   ": "
+   string_content: tensorflow/core/lib/core/threadpool.h
+   ": "
+ preproc_include: #include "tensorflow/core/lib/core/threadpool_options.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/lib/core/threadpool_options.h"
+   ": "
+   string_content: tensorflow/core/lib/core/threadpool_options.h
+   ": "
+ preproc_include: #include "tensorflow/core/platform/test.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/platform/test.h"
+   ": "
+   string_content: tensorflow/core/platform/test.h
+   ": "
+ preproc_include: #include "tensorflow/core/util/work_sharder.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/util/work_sharder.h"
+   ": "
+   string_content: tensorflow/core/util/work_sharder.h
+   ": "
+ namespace_definition: namespace tensorflow {
+namespace {
+
+using ops::Add;
+using ops::BatchMatMul;
+using ops::Const;
+using ops::Mul;
+using ops::Placeholder;
+using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+
+class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+};
+
+TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+
+TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+
+TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+
+TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+
+}  // namespace
+}
+  namespace: namespace
+  namespace_identifier: tensorflow
+  declaration_list: {
+namespace {
+
+using ops::Add;
+using ops::BatchMatMul;
+using ops::Const;
+using ops::Mul;
+using ops::Placeholder;
+using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+
+class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+};
+
+TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+
+TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+
+TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+
+TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+
+}  // namespace
+}
+   {: {
+   namespace_definition: namespace {
+
+using ops::Add;
+using ops::BatchMatMul;
+using ops::Const;
+using ops::Mul;
+using ops::Placeholder;
+using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+
+class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+};
+
+TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+
+TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+
+TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+
+TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+
+}
+    namespace: namespace
+    declaration_list: {
+
+using ops::Add;
+using ops::BatchMatMul;
+using ops::Const;
+using ops::Mul;
+using ops::Placeholder;
+using ops::Sub;
+
+tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+
+class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+};
+
+TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+
+TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+
+TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+
+TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+
+TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+
+}
+     {: {
+     using_declaration: using ops::Add;
+      using: using
+      qualified_identifier: ops::Add
+       namespace_identifier: ops
+       ::: ::
+       identifier: Add
+      ;: ;
+     using_declaration: using ops::BatchMatMul;
+      using: using
+      qualified_identifier: ops::BatchMatMul
+       namespace_identifier: ops
+       ::: ::
+       identifier: BatchMatMul
+      ;: ;
+     using_declaration: using ops::Const;
+      using: using
+      qualified_identifier: ops::Const
+       namespace_identifier: ops
+       ::: ::
+       identifier: Const
+      ;: ;
+     using_declaration: using ops::Mul;
+      using: using
+      qualified_identifier: ops::Mul
+       namespace_identifier: ops
+       ::: ::
+       identifier: Mul
+      ;: ;
+     using_declaration: using ops::Placeholder;
+      using: using
+      qualified_identifier: ops::Placeholder
+       namespace_identifier: ops
+       ::: ::
+       identifier: Placeholder
+      ;: ;
+     using_declaration: using ops::Sub;
+      using: using
+      qualified_identifier: ops::Sub
+       namespace_identifier: ops
+       ::: ::
+       identifier: Sub
+      ;: ;
+     function_definition: tensorflow::SessionOptions GetSessionOptions() {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+      qualified_identifier: tensorflow::SessionOptions
+       namespace_identifier: tensorflow
+       ::: ::
+       type_identifier: SessionOptions
+      function_declarator: GetSessionOptions()
+       identifier: GetSessionOptions
+       parameter_list: ()
+        (: (
+        ): )
+      compound_statement: {
+  tensorflow::SessionOptions options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+  return options;
+}
+       {: {
+       declaration: tensorflow::SessionOptions options;
+        qualified_identifier: tensorflow::SessionOptions
+         namespace_identifier: tensorflow
+         ::: ::
+         type_identifier: SessionOptions
+        identifier: options
+        ;: ;
+       comment: // Disable optimizations for static graph to allow calls to Session::Extend.
+       expression_statement: options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true);
+        call_expression: options.config.mutable_experimental()->set_disable_optimize_for_static_graph(
+      true)
+         field_expression: options.config.mutable_experimental()->set_disable_optimize_for_static_graph
+          call_expression: options.config.mutable_experimental()
+           field_expression: options.config.mutable_experimental
+            field_expression: options.config
+             identifier: options
+             .: .
+             field_identifier: config
+            .: .
+            field_identifier: mutable_experimental
+           argument_list: ()
+            (: (
+            ): )
+          ->: ->
+          field_identifier: set_disable_optimize_for_static_graph
+         argument_list: (
+      true)
+          (: (
+          true: true
+          ): )
+        ;: ;
+       return_statement: return options;
+        return: return
+        identifier: options
+        ;: ;
+       }: }
+     class_specifier: class CustomThreadPoolImpl : public thread::ThreadPoolInterface {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+}
+      class: class
+      type_identifier: CustomThreadPoolImpl
+      base_class_clause: : public thread::ThreadPoolInterface
+       :: :
+       access_specifier: public
+        public: public
+       qualified_identifier: thread::ThreadPoolInterface
+        namespace_identifier: thread
+        ::: ::
+        type_identifier: ThreadPoolInterface
+      field_declaration_list: {
+ public:
+  explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+
+  void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+
+  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+
+  void Cancel() override {}
+
+  int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+
+  int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+
+  int GetNumScheduleCalled() { return num_schedule_called_; }
+
+ private:
+  int num_schedule_called_;
+  std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+}
+       {: {
+       access_specifier: public
+        public: public
+       :: :
+       function_definition: explicit CustomThreadPoolImpl(int numThreads) {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+        explicit_function_specifier: explicit
+         explicit: explicit
+        function_declarator: CustomThreadPoolImpl(int numThreads)
+         identifier: CustomThreadPoolImpl
+         parameter_list: (int numThreads)
+          (: (
+          parameter_declaration: int numThreads
+           primitive_type: int
+           identifier: numThreads
+          ): )
+        compound_statement: {
+    underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+    num_schedule_called_ = 0;
+  }
+         {: {
+         expression_statement: underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads));
+          call_expression: underlying_threadpool_.reset(new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads))
+           field_expression: underlying_threadpool_.reset
+            identifier: underlying_threadpool_
+            .: .
+            field_identifier: reset
+           argument_list: (new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads))
+            (: (
+            new_expression: new thread::ThreadPool(
+        tensorflow::Env::Default(), "custom_threadpool", numThreads)
+             new: new
+             qualified_identifier: thread::ThreadPool
+              namespace_identifier: thread
+              ::: ::
+              type_identifier: ThreadPool
+             argument_list: (
+        tensorflow::Env::Default(), "custom_threadpool", numThreads)
+              (: (
+              call_expression: tensorflow::Env::Default()
+               qualified_identifier: tensorflow::Env::Default
+                namespace_identifier: tensorflow
+                ::: ::
+                qualified_identifier: Env::Default
+                 namespace_identifier: Env
+                 ::: ::
+                 identifier: Default
+               argument_list: ()
+                (: (
+                ): )
+              ,: ,
+              string_literal: "custom_threadpool"
+               ": "
+               string_content: custom_threadpool
+               ": "
+              ,: ,
+              identifier: numThreads
+              ): )
+            ): )
+          ;: ;
+         expression_statement: num_schedule_called_ = 0;
+          assignment_expression: num_schedule_called_ = 0
+           identifier: num_schedule_called_
+           =: =
+           number_literal: 0
+          ;: ;
+         }: }
+       function_definition: void Schedule(std::function<void()> fn) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+        primitive_type: void
+        function_declarator: Schedule(std::function<void()> fn) override
+         field_identifier: Schedule
+         parameter_list: (std::function<void()> fn)
+          (: (
+          parameter_declaration: std::function<void()> fn
+           qualified_identifier: std::function<void()>
+            namespace_identifier: std
+            ::: ::
+            template_type: function<void()>
+             type_identifier: function
+             template_argument_list: <void()>
+              <: <
+              type_descriptor: void()
+               primitive_type: void
+               abstract_function_declarator: ()
+                parameter_list: ()
+                 (: (
+                 ): )
+              >: >
+           identifier: fn
+          ): )
+         virtual_specifier: override
+          override: override
+        compound_statement: {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->Schedule(std::move(fn));
+  }
+         {: {
+         expression_statement: num_schedule_called_ += 1;
+          assignment_expression: num_schedule_called_ += 1
+           identifier: num_schedule_called_
+           +=: +=
+           number_literal: 1
+          ;: ;
+         expression_statement: underlying_threadpool_->Schedule(std::move(fn));
+          call_expression: underlying_threadpool_->Schedule(std::move(fn))
+           field_expression: underlying_threadpool_->Schedule
+            identifier: underlying_threadpool_
+            ->: ->
+            field_identifier: Schedule
+           argument_list: (std::move(fn))
+            (: (
+            call_expression: std::move(fn)
+             qualified_identifier: std::move
+              namespace_identifier: std
+              ::: ::
+              identifier: move
+             argument_list: (fn)
+              (: (
+              identifier: fn
+              ): )
+            ): )
+          ;: ;
+         }: }
+       function_definition: void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+        primitive_type: void
+        function_declarator: ScheduleWithHint(std::function<void()> fn, int start, int end) override
+         field_identifier: ScheduleWithHint
+         parameter_list: (std::function<void()> fn, int start, int end)
+          (: (
+          parameter_declaration: std::function<void()> fn
+           qualified_identifier: std::function<void()>
+            namespace_identifier: std
+            ::: ::
+            template_type: function<void()>
+             type_identifier: function
+             template_argument_list: <void()>
+              <: <
+              type_descriptor: void()
+               primitive_type: void
+               abstract_function_declarator: ()
+                parameter_list: ()
+                 (: (
+                 ): )
+              >: >
+           identifier: fn
+          ,: ,
+          parameter_declaration: int start
+           primitive_type: int
+           identifier: start
+          ,: ,
+          parameter_declaration: int end
+           primitive_type: int
+           identifier: end
+          ): )
+         virtual_specifier: override
+          override: override
+        compound_statement: {
+    num_schedule_called_ += 1;
+    underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+  }
+         {: {
+         expression_statement: num_schedule_called_ += 1;
+          assignment_expression: num_schedule_called_ += 1
+           identifier: num_schedule_called_
+           +=: +=
+           number_literal: 1
+          ;: ;
+         expression_statement: underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end);
+          call_expression: underlying_threadpool_->ScheduleWithHint(std::move(fn), start, end)
+           field_expression: underlying_threadpool_->ScheduleWithHint
+            identifier: underlying_threadpool_
+            ->: ->
+            field_identifier: ScheduleWithHint
+           argument_list: (std::move(fn), start, end)
+            (: (
+            call_expression: std::move(fn)
+             qualified_identifier: std::move
+              namespace_identifier: std
+              ::: ::
+              identifier: move
+             argument_list: (fn)
+              (: (
+              identifier: fn
+              ): )
+            ,: ,
+            identifier: start
+            ,: ,
+            identifier: end
+            ): )
+          ;: ;
+         }: }
+       function_definition: void Cancel() override {}
+        primitive_type: void
+        function_declarator: Cancel() override
+         field_identifier: Cancel
+         parameter_list: ()
+          (: (
+          ): )
+         virtual_specifier: override
+          override: override
+        compound_statement: {}
+         {: {
+         }: }
+       function_definition: int NumThreads() const override {
+    return underlying_threadpool_->NumThreads();
+  }
+        primitive_type: int
+        function_declarator: NumThreads() const override
+         field_identifier: NumThreads
+         parameter_list: ()
+          (: (
+          ): )
+         type_qualifier: const
+          const: const
+         virtual_specifier: override
+          override: override
+        compound_statement: {
+    return underlying_threadpool_->NumThreads();
+  }
+         {: {
+         return_statement: return underlying_threadpool_->NumThreads();
+          return: return
+          call_expression: underlying_threadpool_->NumThreads()
+           field_expression: underlying_threadpool_->NumThreads
+            identifier: underlying_threadpool_
+            ->: ->
+            field_identifier: NumThreads
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         }: }
+       function_definition: int CurrentThreadId() const override {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+        primitive_type: int
+        function_declarator: CurrentThreadId() const override
+         field_identifier: CurrentThreadId
+         parameter_list: ()
+          (: (
+          ): )
+         type_qualifier: const
+          const: const
+         virtual_specifier: override
+          override: override
+        compound_statement: {
+    return underlying_threadpool_->CurrentThreadId();
+  }
+         {: {
+         return_statement: return underlying_threadpool_->CurrentThreadId();
+          return: return
+          call_expression: underlying_threadpool_->CurrentThreadId()
+           field_expression: underlying_threadpool_->CurrentThreadId
+            identifier: underlying_threadpool_
+            ->: ->
+            field_identifier: CurrentThreadId
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         }: }
+       function_definition: int GetNumScheduleCalled() { return num_schedule_called_; }
+        primitive_type: int
+        function_declarator: GetNumScheduleCalled()
+         field_identifier: GetNumScheduleCalled
+         parameter_list: ()
+          (: (
+          ): )
+        compound_statement: { return num_schedule_called_; }
+         {: {
+         return_statement: return num_schedule_called_;
+          return: return
+          identifier: num_schedule_called_
+          ;: ;
+         }: }
+       access_specifier: private
+        private: private
+       :: :
+       field_declaration: int num_schedule_called_;
+        primitive_type: int
+        field_identifier: num_schedule_called_
+        ;: ;
+       field_declaration: std::unique_ptr<tensorflow::thread::ThreadPool> underlying_threadpool_;
+        qualified_identifier: std::unique_ptr<tensorflow::thread::ThreadPool>
+         namespace_identifier: std
+         ::: ::
+         template_type: unique_ptr<tensorflow::thread::ThreadPool>
+          type_identifier: unique_ptr
+          template_argument_list: <tensorflow::thread::ThreadPool>
+           <: <
+           type_descriptor: tensorflow::thread::ThreadPool
+            qualified_identifier: tensorflow::thread::ThreadPool
+             namespace_identifier: tensorflow
+             ::: ::
+             qualified_identifier: thread::ThreadPool
+              namespace_identifier: thread
+              ::: ::
+              type_identifier: ThreadPool
+           >: >
+        field_identifier: underlying_threadpool_
+        ;: ;
+       }: }
+     ;: ;
+     function_definition: TEST(ClientSessionTest, Basic) {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+      function_declarator: TEST(ClientSessionTest, Basic)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, Basic)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: Basic
+         type_identifier: Basic
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  auto c = Const(root, {{1, 1}});
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: auto c = Const(root, {{1, 1}});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Const(root, {{1, 1}})
+         identifier: c
+         =: =
+         call_expression: Const(root, {{1, 1}})
+          identifier: Const
+          argument_list: (root, {{1, 1}})
+           (: (
+           identifier: root
+           ,: ,
+           initializer_list: {{1, 1}}
+            {: {
+            initializer_list: {1, 1}
+             {: {
+             number_literal: 1
+             ,: ,
+             number_literal: 1
+             }: }
+            }: }
+           ): )
+        ;: ;
+       declaration: ClientSession session(root);
+        type_identifier: ClientSession
+        function_declarator: session(root)
+         identifier: session
+         parameter_list: (root)
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run({c}, &outputs));
+        call_expression: TF_EXPECT_OK(session.Run({c}, &outputs))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run({c}, &outputs))
+          (: (
+          call_expression: session.Run({c}, &outputs)
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: ({c}, &outputs)
+            (: (
+            initializer_list: {c}
+             {: {
+             identifier: c
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({1, 1}, {1, 2}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({1, 1}, {1, 2}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({1, 1}, {1, 2})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({1, 1}, {1, 2})
+            (: (
+            initializer_list: {1, 1}
+             {: {
+             number_literal: 1
+             ,: ,
+             number_literal: 1
+             }: }
+            ,: ,
+            initializer_list: {1, 2}
+             {: {
+             number_literal: 1
+             ,: ,
+             number_literal: 2
+             }: }
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, Feed) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+      function_declarator: TEST(ClientSessionTest, Feed)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, Feed)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: Feed
+         type_identifier: Feed
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: auto a = Placeholder(root, DT_INT32);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Placeholder(root, DT_INT32)
+         identifier: a
+         =: =
+         call_expression: Placeholder(root, DT_INT32)
+          identifier: Placeholder
+          argument_list: (root, DT_INT32)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ): )
+        ;: ;
+       declaration: auto b = Placeholder(root, DT_INT32);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: b = Placeholder(root, DT_INT32)
+         identifier: b
+         =: =
+         call_expression: Placeholder(root, DT_INT32)
+          identifier: Placeholder
+          argument_list: (root, DT_INT32)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ): )
+        ;: ;
+       declaration: auto c = Add(root, a, b);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Add(root, a, b)
+         identifier: c
+         =: =
+         call_expression: Add(root, a, b)
+          identifier: Add
+          argument_list: (root, a, b)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: a
+           ,: ,
+           identifier: b
+           ): )
+        ;: ;
+       declaration: ClientSession session(root);
+        type_identifier: ClientSession
+        function_declarator: session(root)
+         identifier: session
+         parameter_list: (root)
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs));
+        call_expression: TF_EXPECT_OK(session.Run({{a, 1}, {b, 41}}, {c}, &outputs))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run({{a, 1}, {b, 41}}, {c}, &outputs))
+          (: (
+          call_expression: session.Run({{a, 1}, {b, 41}}, {c}, &outputs)
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: ({{a, 1}, {b, 41}}, {c}, &outputs)
+            (: (
+            initializer_list: {{a, 1}, {b, 41}}
+             {: {
+             initializer_list: {a, 1}
+              {: {
+              identifier: a
+              ,: ,
+              number_literal: 1
+              }: }
+             ,: ,
+             initializer_list: {b, 41}
+              {: {
+              identifier: b
+              ,: ,
+              number_literal: 41
+              }: }
+             }: }
+            ,: ,
+            initializer_list: {c}
+             {: {
+             identifier: c
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({42}, {}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({42}, {})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({42}, {})
+            (: (
+            initializer_list: {42}
+             {: {
+             number_literal: 42
+             }: }
+            ,: ,
+            initializer_list: {}
+             {: {
+             }: }
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, Extend) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+      function_declarator: TEST(ClientSessionTest, Extend)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, Extend)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: Extend
+         type_identifier: Extend
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+  auto c = Add(root, a, {2, 2});
+  ClientSession session(root, GetSessionOptions());
+  std::vector<Tensor> outputs;
+
+  TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+
+  auto d = Add(root, c, {39, 39});
+  outputs.clear();
+  TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: auto a = Placeholder(root, DT_INT32, Placeholder::Shape({2}));
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Placeholder(root, DT_INT32, Placeholder::Shape({2}))
+         identifier: a
+         =: =
+         call_expression: Placeholder(root, DT_INT32, Placeholder::Shape({2}))
+          identifier: Placeholder
+          argument_list: (root, DT_INT32, Placeholder::Shape({2}))
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ,: ,
+           call_expression: Placeholder::Shape({2})
+            qualified_identifier: Placeholder::Shape
+             namespace_identifier: Placeholder
+             ::: ::
+             identifier: Shape
+            argument_list: ({2})
+             (: (
+             initializer_list: {2}
+              {: {
+              number_literal: 2
+              }: }
+             ): )
+           ): )
+        ;: ;
+       declaration: auto c = Add(root, a, {2, 2});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Add(root, a, {2, 2})
+         identifier: c
+         =: =
+         call_expression: Add(root, a, {2, 2})
+          identifier: Add
+          argument_list: (root, a, {2, 2})
+           (: (
+           identifier: root
+           ,: ,
+           identifier: a
+           ,: ,
+           initializer_list: {2, 2}
+            {: {
+            number_literal: 2
+            ,: ,
+            number_literal: 2
+            }: }
+           ): )
+        ;: ;
+       declaration: ClientSession session(root, GetSessionOptions());
+        type_identifier: ClientSession
+        function_declarator: session(root, GetSessionOptions())
+         identifier: session
+         parameter_list: (root, GetSessionOptions())
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ,: ,
+          parameter_declaration: GetSessionOptions()
+           type_identifier: GetSessionOptions
+           abstract_function_declarator: ()
+            parameter_list: ()
+             (: (
+             ): )
+          ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs));
+        call_expression: TF_EXPECT_OK(session.Run({{a, {1, 1}}}, {c}, &outputs))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run({{a, {1, 1}}}, {c}, &outputs))
+          (: (
+          call_expression: session.Run({{a, {1, 1}}}, {c}, &outputs)
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: ({{a, {1, 1}}}, {c}, &outputs)
+            (: (
+            initializer_list: {{a, {1, 1}}}
+             {: {
+             initializer_list: {a, {1, 1}}
+              {: {
+              identifier: a
+              ,: ,
+              initializer_list: {1, 1}
+               {: {
+               number_literal: 1
+               ,: ,
+               number_literal: 1
+               }: }
+              }: }
+             }: }
+            ,: ,
+            initializer_list: {c}
+             {: {
+             identifier: c
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({3, 3}, {2}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({3, 3}, {2}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({3, 3}, {2})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({3, 3}, {2})
+            (: (
+            initializer_list: {3, 3}
+             {: {
+             number_literal: 3
+             ,: ,
+             number_literal: 3
+             }: }
+            ,: ,
+            initializer_list: {2}
+             {: {
+             number_literal: 2
+             }: }
+            ): )
+          ): )
+        ;: ;
+       declaration: auto d = Add(root, c, {39, 39});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: d = Add(root, c, {39, 39})
+         identifier: d
+         =: =
+         call_expression: Add(root, c, {39, 39})
+          identifier: Add
+          argument_list: (root, c, {39, 39})
+           (: (
+           identifier: root
+           ,: ,
+           identifier: c
+           ,: ,
+           initializer_list: {39, 39}
+            {: {
+            number_literal: 39
+            ,: ,
+            number_literal: 39
+            }: }
+           ): )
+        ;: ;
+       expression_statement: outputs.clear();
+        call_expression: outputs.clear()
+         field_expression: outputs.clear
+          identifier: outputs
+          .: .
+          field_identifier: clear
+         argument_list: ()
+          (: (
+          ): )
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs));
+        call_expression: TF_EXPECT_OK(session.Run({{a, {-10, 1}}}, {d}, &outputs))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run({{a, {-10, 1}}}, {d}, &outputs))
+          (: (
+          call_expression: session.Run({{a, {-10, 1}}}, {d}, &outputs)
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: ({{a, {-10, 1}}}, {d}, &outputs)
+            (: (
+            initializer_list: {{a, {-10, 1}}}
+             {: {
+             initializer_list: {a, {-10, 1}}
+              {: {
+              identifier: a
+              ,: ,
+              initializer_list: {-10, 1}
+               {: {
+               number_literal: -10
+               ,: ,
+               number_literal: 1
+               }: }
+              }: }
+             }: }
+            ,: ,
+            initializer_list: {d}
+             {: {
+             identifier: d
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({31, 42}, {2}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({31, 42}, {2}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({31, 42}, {2})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({31, 42}, {2})
+            (: (
+            initializer_list: {31, 42}
+             {: {
+             number_literal: 31
+             ,: ,
+             number_literal: 42
+             }: }
+            ,: ,
+            initializer_list: {2}
+             {: {
+             number_literal: 2
+             }: }
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+      function_declarator: TEST(ClientSessionTest, MultiThreadedWithDefaultThreadpool)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, MultiThreadedWithDefaultThreadpool)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: MultiThreadedWithDefaultThreadpool
+         type_identifier: MultiThreadedWithDefaultThreadpool
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({c}, &outputs));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: auto a = Add(root, {1, 2}, {3, 4});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Add(root, {1, 2}, {3, 4})
+         identifier: a
+         =: =
+         call_expression: Add(root, {1, 2}, {3, 4})
+          identifier: Add
+          argument_list: (root, {1, 2}, {3, 4})
+           (: (
+           identifier: root
+           ,: ,
+           initializer_list: {1, 2}
+            {: {
+            number_literal: 1
+            ,: ,
+            number_literal: 2
+            }: }
+           ,: ,
+           initializer_list: {3, 4}
+            {: {
+            number_literal: 3
+            ,: ,
+            number_literal: 4
+            }: }
+           ): )
+        ;: ;
+       declaration: auto b = Mul(root, {1, 2}, {3, 4});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: b = Mul(root, {1, 2}, {3, 4})
+         identifier: b
+         =: =
+         call_expression: Mul(root, {1, 2}, {3, 4})
+          identifier: Mul
+          argument_list: (root, {1, 2}, {3, 4})
+           (: (
+           identifier: root
+           ,: ,
+           initializer_list: {1, 2}
+            {: {
+            number_literal: 1
+            ,: ,
+            number_literal: 2
+            }: }
+           ,: ,
+           initializer_list: {3, 4}
+            {: {
+            number_literal: 3
+            ,: ,
+            number_literal: 4
+            }: }
+           ): )
+        ;: ;
+       declaration: ClientSession session(root, GetSessionOptions());
+        type_identifier: ClientSession
+        function_declarator: session(root, GetSessionOptions())
+         identifier: session
+         parameter_list: (root, GetSessionOptions())
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ,: ,
+          parameter_declaration: GetSessionOptions()
+           type_identifier: GetSessionOptions
+           abstract_function_declarator: ()
+            parameter_list: ()
+             (: (
+             ): )
+          ): )
+        ;: ;
+       compound_statement: {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+        {: {
+        declaration: thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+         qualified_identifier: thread::ThreadPool
+          namespace_identifier: thread
+          ::: ::
+          type_identifier: ThreadPool
+         init_declarator: thread_pool(Env::Default(), "pool", 2)
+          identifier: thread_pool
+          argument_list: (Env::Default(), "pool", 2)
+           (: (
+           call_expression: Env::Default()
+            qualified_identifier: Env::Default
+             namespace_identifier: Env
+             ::: ::
+             identifier: Default
+            argument_list: ()
+             (: (
+             ): )
+           ,: ,
+           string_literal: "pool"
+            ": "
+            string_content: pool
+            ": "
+           ,: ,
+           number_literal: 2
+           ): )
+         ;: ;
+        expression_statement: thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+         call_expression: thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    })
+          field_expression: thread_pool.Schedule
+           identifier: thread_pool
+           .: .
+           field_identifier: Schedule
+          argument_list: ([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    })
+           (: (
+           lambda_expression: [&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    }
+            lambda_capture_specifier: [&session, a]
+             [: [
+             &: &
+             identifier: session
+             ,: ,
+             identifier: a
+             ]: ]
+            lambda_declarator: ()
+             parameter_list: ()
+              (: (
+              ): )
+            compound_statement: {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({a}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    }
+             {: {
+             declaration: std::vector<Tensor> outputs;
+              qualified_identifier: std::vector<Tensor>
+               namespace_identifier: std
+               ::: ::
+               template_type: vector<Tensor>
+                type_identifier: vector
+                template_argument_list: <Tensor>
+                 <: <
+                 type_descriptor: Tensor
+                  type_identifier: Tensor
+                 >: >
+              identifier: outputs
+              ;: ;
+             expression_statement: TF_EXPECT_OK(session.Run({a}, &outputs));
+              call_expression: TF_EXPECT_OK(session.Run({a}, &outputs))
+               identifier: TF_EXPECT_OK
+               argument_list: (session.Run({a}, &outputs))
+                (: (
+                call_expression: session.Run({a}, &outputs)
+                 field_expression: session.Run
+                  identifier: session
+                  .: .
+                  field_identifier: Run
+                 argument_list: ({a}, &outputs)
+                  (: (
+                  initializer_list: {a}
+                   {: {
+                   identifier: a
+                   }: }
+                  ,: ,
+                  pointer_expression: &outputs
+                   &: &
+                   identifier: outputs
+                  ): )
+                ): )
+              ;: ;
+             expression_statement: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+              call_expression: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}))
+               qualified_identifier: test::ExpectTensorEqual<int>
+                namespace_identifier: test
+                ::: ::
+                template_function: ExpectTensorEqual<int>
+                 identifier: ExpectTensorEqual
+                 template_argument_list: <int>
+                  <: <
+                  type_descriptor: int
+                   primitive_type: int
+                  >: >
+               argument_list: (outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}))
+                (: (
+                subscript_expression: outputs[0]
+                 identifier: outputs
+                 subscript_argument_list: [0]
+                  [: [
+                  number_literal: 0
+                  ]: ]
+                ,: ,
+                call_expression: test::AsTensor<int>({4, 6}, {2})
+                 qualified_identifier: test::AsTensor<int>
+                  namespace_identifier: test
+                  ::: ::
+                  template_function: AsTensor<int>
+                   identifier: AsTensor
+                   template_argument_list: <int>
+                    <: <
+                    type_descriptor: int
+                     primitive_type: int
+                    >: >
+                 argument_list: ({4, 6}, {2})
+                  (: (
+                  initializer_list: {4, 6}
+                   {: {
+                   number_literal: 4
+                   ,: ,
+                   number_literal: 6
+                   }: }
+                  ,: ,
+                  initializer_list: {2}
+                   {: {
+                   number_literal: 2
+                   }: }
+                  ): )
+                ): )
+              ;: ;
+             }: }
+           ): )
+         ;: ;
+        expression_statement: thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+         call_expression: thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    })
+          field_expression: thread_pool.Schedule
+           identifier: thread_pool
+           .: .
+           field_identifier: Schedule
+          argument_list: ([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    })
+           (: (
+           lambda_expression: [&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    }
+            lambda_capture_specifier: [&session, b]
+             [: [
+             &: &
+             identifier: session
+             ,: ,
+             identifier: b
+             ]: ]
+            lambda_declarator: ()
+             parameter_list: ()
+              (: (
+              ): )
+            compound_statement: {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run({b}, &outputs));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    }
+             {: {
+             declaration: std::vector<Tensor> outputs;
+              qualified_identifier: std::vector<Tensor>
+               namespace_identifier: std
+               ::: ::
+               template_type: vector<Tensor>
+                type_identifier: vector
+                template_argument_list: <Tensor>
+                 <: <
+                 type_descriptor: Tensor
+                  type_identifier: Tensor
+                 >: >
+              identifier: outputs
+              ;: ;
+             expression_statement: TF_EXPECT_OK(session.Run({b}, &outputs));
+              call_expression: TF_EXPECT_OK(session.Run({b}, &outputs))
+               identifier: TF_EXPECT_OK
+               argument_list: (session.Run({b}, &outputs))
+                (: (
+                call_expression: session.Run({b}, &outputs)
+                 field_expression: session.Run
+                  identifier: session
+                  .: .
+                  field_identifier: Run
+                 argument_list: ({b}, &outputs)
+                  (: (
+                  initializer_list: {b}
+                   {: {
+                   identifier: b
+                   }: }
+                  ,: ,
+                  pointer_expression: &outputs
+                   &: &
+                   identifier: outputs
+                  ): )
+                ): )
+              ;: ;
+             expression_statement: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+              call_expression: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}))
+               qualified_identifier: test::ExpectTensorEqual<int>
+                namespace_identifier: test
+                ::: ::
+                template_function: ExpectTensorEqual<int>
+                 identifier: ExpectTensorEqual
+                 template_argument_list: <int>
+                  <: <
+                  type_descriptor: int
+                   primitive_type: int
+                  >: >
+               argument_list: (outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}))
+                (: (
+                subscript_expression: outputs[0]
+                 identifier: outputs
+                 subscript_argument_list: [0]
+                  [: [
+                  number_literal: 0
+                  ]: ]
+                ,: ,
+                call_expression: test::AsTensor<int>({3, 8}, {2})
+                 qualified_identifier: test::AsTensor<int>
+                  namespace_identifier: test
+                  ::: ::
+                  template_function: AsTensor<int>
+                   identifier: AsTensor
+                   template_argument_list: <int>
+                    <: <
+                    type_descriptor: int
+                     primitive_type: int
+                    >: >
+                 argument_list: ({3, 8}, {2})
+                  (: (
+                  initializer_list: {3, 8}
+                   {: {
+                   number_literal: 3
+                   ,: ,
+                   number_literal: 8
+                   }: }
+                  ,: ,
+                  initializer_list: {2}
+                   {: {
+                   number_literal: 2
+                   }: }
+                  ): )
+                ): )
+              ;: ;
+             }: }
+           ): )
+         ;: ;
+        }: }
+       declaration: auto c = Sub(root, b, a);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Sub(root, b, a)
+         identifier: c
+         =: =
+         call_expression: Sub(root, b, a)
+          identifier: Sub
+          argument_list: (root, b, a)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: b
+           ,: ,
+           identifier: a
+           ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run({c}, &outputs));
+        call_expression: TF_EXPECT_OK(session.Run({c}, &outputs))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run({c}, &outputs))
+          (: (
+          call_expression: session.Run({c}, &outputs)
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: ({c}, &outputs)
+            (: (
+            initializer_list: {c}
+             {: {
+             identifier: c
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({-1, 2}, {2}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({-1, 2}, {2})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({-1, 2}, {2})
+            (: (
+            initializer_list: {-1, 2}
+             {: {
+             number_literal: -1
+             ,: ,
+             number_literal: 2
+             }: }
+            ,: ,
+            initializer_list: {2}
+             {: {
+             number_literal: 2
+             }: }
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+      function_declarator: TEST(ClientSessionTest, MultiThreadedWithCustomThreadpool)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, MultiThreadedWithCustomThreadpool)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: MultiThreadedWithCustomThreadpool
+         type_identifier: MultiThreadedWithCustomThreadpool
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+  auto a = Add(root, {1, 2}, {3, 4});
+  auto b = Mul(root, {1, 2}, {3, 4});
+  ClientSession session(root, GetSessionOptions());
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+  auto c = Sub(root, b, a);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: int num_threads = 3;
+        primitive_type: int
+        init_declarator: num_threads = 3
+         identifier: num_threads
+         =: =
+         number_literal: 3
+        ;: ;
+       declaration: auto a = Add(root, {1, 2}, {3, 4});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Add(root, {1, 2}, {3, 4})
+         identifier: a
+         =: =
+         call_expression: Add(root, {1, 2}, {3, 4})
+          identifier: Add
+          argument_list: (root, {1, 2}, {3, 4})
+           (: (
+           identifier: root
+           ,: ,
+           initializer_list: {1, 2}
+            {: {
+            number_literal: 1
+            ,: ,
+            number_literal: 2
+            }: }
+           ,: ,
+           initializer_list: {3, 4}
+            {: {
+            number_literal: 3
+            ,: ,
+            number_literal: 4
+            }: }
+           ): )
+        ;: ;
+       declaration: auto b = Mul(root, {1, 2}, {3, 4});
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: b = Mul(root, {1, 2}, {3, 4})
+         identifier: b
+         =: =
+         call_expression: Mul(root, {1, 2}, {3, 4})
+          identifier: Mul
+          argument_list: (root, {1, 2}, {3, 4})
+           (: (
+           identifier: root
+           ,: ,
+           initializer_list: {1, 2}
+            {: {
+            number_literal: 1
+            ,: ,
+            number_literal: 2
+            }: }
+           ,: ,
+           initializer_list: {3, 4}
+            {: {
+            number_literal: 3
+            ,: ,
+            number_literal: 4
+            }: }
+           ): )
+        ;: ;
+       declaration: ClientSession session(root, GetSessionOptions());
+        type_identifier: ClientSession
+        function_declarator: session(root, GetSessionOptions())
+         identifier: session
+         parameter_list: (root, GetSessionOptions())
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ,: ,
+          parameter_declaration: GetSessionOptions()
+           type_identifier: GetSessionOptions
+           abstract_function_declarator: ()
+            parameter_list: ()
+             (: (
+             ): )
+          ): )
+        ;: ;
+       declaration: auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads)
+         identifier: inter_op_threadpool
+         =: =
+         call_expression: absl::make_unique<CustomThreadPoolImpl>(num_threads)
+          qualified_identifier: absl::make_unique<CustomThreadPoolImpl>
+           namespace_identifier: absl
+           ::: ::
+           template_function: make_unique<CustomThreadPoolImpl>
+            identifier: make_unique
+            template_argument_list: <CustomThreadPoolImpl>
+             <: <
+             type_descriptor: CustomThreadPoolImpl
+              type_identifier: CustomThreadPoolImpl
+             >: >
+          argument_list: (num_threads)
+           (: (
+           identifier: num_threads
+           ): )
+        ;: ;
+       expression_statement: ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_EQ
+         argument_list: (inter_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: inter_op_threadpool->GetNumScheduleCalled()
+           field_expression: inter_op_threadpool->GetNumScheduleCalled
+            identifier: inter_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       declaration: auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads)
+         identifier: intra_op_threadpool
+         =: =
+         call_expression: absl::make_unique<CustomThreadPoolImpl>(num_threads)
+          qualified_identifier: absl::make_unique<CustomThreadPoolImpl>
+           namespace_identifier: absl
+           ::: ::
+           template_function: make_unique<CustomThreadPoolImpl>
+            identifier: make_unique
+            template_argument_list: <CustomThreadPoolImpl>
+             <: <
+             type_descriptor: CustomThreadPoolImpl
+              type_identifier: CustomThreadPoolImpl
+             >: >
+          argument_list: (num_threads)
+           (: (
+           identifier: num_threads
+           ): )
+        ;: ;
+       expression_statement: ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_EQ
+         argument_list: (intra_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: intra_op_threadpool->GetNumScheduleCalled()
+           field_expression: intra_op_threadpool->GetNumScheduleCalled
+            identifier: intra_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       declaration: tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+        qualified_identifier: tensorflow::thread::ThreadPoolOptions
+         namespace_identifier: tensorflow
+         ::: ::
+         qualified_identifier: thread::ThreadPoolOptions
+          namespace_identifier: thread
+          ::: ::
+          type_identifier: ThreadPoolOptions
+        identifier: threadPoolOptions
+        ;: ;
+       expression_statement: threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+        assignment_expression: threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get()
+         field_expression: threadPoolOptions.inter_op_threadpool
+          identifier: threadPoolOptions
+          .: .
+          field_identifier: inter_op_threadpool
+         =: =
+         call_expression: inter_op_threadpool.get()
+          field_expression: inter_op_threadpool.get
+           identifier: inter_op_threadpool
+           .: .
+           field_identifier: get
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       expression_statement: threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+        assignment_expression: threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get()
+         field_expression: threadPoolOptions.intra_op_threadpool
+          identifier: threadPoolOptions
+          .: .
+          field_identifier: intra_op_threadpool
+         =: =
+         call_expression: intra_op_threadpool.get()
+          field_expression: intra_op_threadpool.get
+           identifier: intra_op_threadpool
+           .: .
+           field_identifier: get
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       compound_statement: {
+    thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+    thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+    thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+  }
+        {: {
+        declaration: thread::ThreadPool thread_pool(Env::Default(), "pool", 2);
+         qualified_identifier: thread::ThreadPool
+          namespace_identifier: thread
+          ::: ::
+          type_identifier: ThreadPool
+         init_declarator: thread_pool(Env::Default(), "pool", 2)
+          identifier: thread_pool
+          argument_list: (Env::Default(), "pool", 2)
+           (: (
+           call_expression: Env::Default()
+            qualified_identifier: Env::Default
+             namespace_identifier: Env
+             ::: ::
+             identifier: Default
+            argument_list: ()
+             (: (
+             ): )
+           ,: ,
+           string_literal: "pool"
+            ": "
+            string_content: pool
+            ": "
+           ,: ,
+           number_literal: 2
+           ): )
+         ;: ;
+        expression_statement: thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    });
+         call_expression: thread_pool.Schedule([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    })
+          field_expression: thread_pool.Schedule
+           identifier: thread_pool
+           .: .
+           field_identifier: Schedule
+          argument_list: ([&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    })
+           (: (
+           lambda_expression: [&session, a]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    }
+            lambda_capture_specifier: [&session, a]
+             [: [
+             &: &
+             identifier: session
+             ,: ,
+             identifier: a
+             ]: ]
+            lambda_declarator: ()
+             parameter_list: ()
+              (: (
+              ): )
+            compound_statement: {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+    }
+             {: {
+             declaration: std::vector<Tensor> outputs;
+              qualified_identifier: std::vector<Tensor>
+               namespace_identifier: std
+               ::: ::
+               template_type: vector<Tensor>
+                type_identifier: vector
+                template_argument_list: <Tensor>
+                 <: <
+                 type_descriptor: Tensor
+                  type_identifier: Tensor
+                 >: >
+              identifier: outputs
+              ;: ;
+             expression_statement: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+              call_expression: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()))
+               identifier: TF_EXPECT_OK
+               argument_list: (session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()))
+                (: (
+                call_expression: session.Run(RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions())
+                 field_expression: session.Run
+                  identifier: session
+                  .: .
+                  field_identifier: Run
+                 argument_list: (RunOptions(), ClientSession::FeedType{}, {a}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions())
+                  (: (
+                  call_expression: RunOptions()
+                   identifier: RunOptions
+                   argument_list: ()
+                    (: (
+                    ): )
+                  ,: ,
+                  compound_literal_expression: ClientSession::FeedType{}
+                   qualified_identifier: ClientSession::FeedType
+                    namespace_identifier: ClientSession
+                    ::: ::
+                    type_identifier: FeedType
+                   initializer_list: {}
+                    {: {
+                    }: }
+                  ,: ,
+                  initializer_list: {a}
+                   {: {
+                   identifier: a
+                   }: }
+                  ,: ,
+                  initializer_list: {}
+                   {: {
+                   }: }
+                  ,: ,
+                  pointer_expression: &outputs
+                   &: &
+                   identifier: outputs
+                  ,: ,
+                  null: nullptr
+                   nullptr: nullptr
+                  ,: ,
+                  call_expression: thread::ThreadPoolOptions()
+                   qualified_identifier: thread::ThreadPoolOptions
+                    namespace_identifier: thread
+                    ::: ::
+                    identifier: ThreadPoolOptions
+                   argument_list: ()
+                    (: (
+                    ): )
+                  ): )
+                ): )
+              ;: ;
+             expression_statement: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}));
+              call_expression: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}))
+               qualified_identifier: test::ExpectTensorEqual<int>
+                namespace_identifier: test
+                ::: ::
+                template_function: ExpectTensorEqual<int>
+                 identifier: ExpectTensorEqual
+                 template_argument_list: <int>
+                  <: <
+                  type_descriptor: int
+                   primitive_type: int
+                  >: >
+               argument_list: (outputs[0],
+                                   test::AsTensor<int>({4, 6}, {2}))
+                (: (
+                subscript_expression: outputs[0]
+                 identifier: outputs
+                 subscript_argument_list: [0]
+                  [: [
+                  number_literal: 0
+                  ]: ]
+                ,: ,
+                call_expression: test::AsTensor<int>({4, 6}, {2})
+                 qualified_identifier: test::AsTensor<int>
+                  namespace_identifier: test
+                  ::: ::
+                  template_function: AsTensor<int>
+                   identifier: AsTensor
+                   template_argument_list: <int>
+                    <: <
+                    type_descriptor: int
+                     primitive_type: int
+                    >: >
+                 argument_list: ({4, 6}, {2})
+                  (: (
+                  initializer_list: {4, 6}
+                   {: {
+                   number_literal: 4
+                   ,: ,
+                   number_literal: 6
+                   }: }
+                  ,: ,
+                  initializer_list: {2}
+                   {: {
+                   number_literal: 2
+                   }: }
+                  ): )
+                ): )
+              ;: ;
+             }: }
+           ): )
+         ;: ;
+        expression_statement: thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    });
+         call_expression: thread_pool.Schedule([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    })
+          field_expression: thread_pool.Schedule
+           identifier: thread_pool
+           .: .
+           field_identifier: Schedule
+          argument_list: ([&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    })
+           (: (
+           lambda_expression: [&session, b]() {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    }
+            lambda_capture_specifier: [&session, b]
+             [: [
+             &: &
+             identifier: session
+             ,: ,
+             identifier: b
+             ]: ]
+            lambda_declarator: ()
+             parameter_list: ()
+              (: (
+              ): )
+            compound_statement: {
+      std::vector<Tensor> outputs;
+      TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+      test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+    }
+             {: {
+             declaration: std::vector<Tensor> outputs;
+              qualified_identifier: std::vector<Tensor>
+               namespace_identifier: std
+               ::: ::
+               template_type: vector<Tensor>
+                type_identifier: vector
+                template_argument_list: <Tensor>
+                 <: <
+                 type_descriptor: Tensor
+                  type_identifier: Tensor
+                 >: >
+              identifier: outputs
+              ;: ;
+             expression_statement: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()));
+              call_expression: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()))
+               identifier: TF_EXPECT_OK
+               argument_list: (session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions()))
+                (: (
+                call_expression: session.Run(RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions())
+                 field_expression: session.Run
+                  identifier: session
+                  .: .
+                  field_identifier: Run
+                 argument_list: (RunOptions(), ClientSession::FeedType{}, {b}, {},
+                               &outputs, nullptr, thread::ThreadPoolOptions())
+                  (: (
+                  call_expression: RunOptions()
+                   identifier: RunOptions
+                   argument_list: ()
+                    (: (
+                    ): )
+                  ,: ,
+                  compound_literal_expression: ClientSession::FeedType{}
+                   qualified_identifier: ClientSession::FeedType
+                    namespace_identifier: ClientSession
+                    ::: ::
+                    type_identifier: FeedType
+                   initializer_list: {}
+                    {: {
+                    }: }
+                  ,: ,
+                  initializer_list: {b}
+                   {: {
+                   identifier: b
+                   }: }
+                  ,: ,
+                  initializer_list: {}
+                   {: {
+                   }: }
+                  ,: ,
+                  pointer_expression: &outputs
+                   &: &
+                   identifier: outputs
+                  ,: ,
+                  null: nullptr
+                   nullptr: nullptr
+                  ,: ,
+                  call_expression: thread::ThreadPoolOptions()
+                   qualified_identifier: thread::ThreadPoolOptions
+                    namespace_identifier: thread
+                    ::: ::
+                    identifier: ThreadPoolOptions
+                   argument_list: ()
+                    (: (
+                    ): )
+                  ): )
+                ): )
+              ;: ;
+             expression_statement: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}));
+              call_expression: test::ExpectTensorEqual<int>(outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}))
+               qualified_identifier: test::ExpectTensorEqual<int>
+                namespace_identifier: test
+                ::: ::
+                template_function: ExpectTensorEqual<int>
+                 identifier: ExpectTensorEqual
+                 template_argument_list: <int>
+                  <: <
+                  type_descriptor: int
+                   primitive_type: int
+                  >: >
+               argument_list: (outputs[0],
+                                   test::AsTensor<int>({3, 8}, {2}))
+                (: (
+                subscript_expression: outputs[0]
+                 identifier: outputs
+                 subscript_argument_list: [0]
+                  [: [
+                  number_literal: 0
+                  ]: ]
+                ,: ,
+                call_expression: test::AsTensor<int>({3, 8}, {2})
+                 qualified_identifier: test::AsTensor<int>
+                  namespace_identifier: test
+                  ::: ::
+                  template_function: AsTensor<int>
+                   identifier: AsTensor
+                   template_argument_list: <int>
+                    <: <
+                    type_descriptor: int
+                     primitive_type: int
+                    >: >
+                 argument_list: ({3, 8}, {2})
+                  (: (
+                  initializer_list: {3, 8}
+                   {: {
+                   number_literal: 3
+                   ,: ,
+                   number_literal: 8
+                   }: }
+                  ,: ,
+                  initializer_list: {2}
+                   {: {
+                   number_literal: 2
+                   }: }
+                  ): )
+                ): )
+              ;: ;
+             }: }
+           ): )
+         ;: ;
+        }: }
+       declaration: auto c = Sub(root, b, a);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Sub(root, b, a)
+         identifier: c
+         =: =
+         call_expression: Sub(root, b, a)
+          identifier: Sub
+          argument_list: (root, b, a)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: b
+           ,: ,
+           identifier: a
+           ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()));
+        call_expression: TF_EXPECT_OK(session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions()))
+          (: (
+          call_expression: session.Run(RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions())
+           field_expression: session.Run
+            identifier: session
+            .: .
+            field_identifier: Run
+           argument_list: (RunOptions(), ClientSession::FeedType{}, {c}, {},
+                           &outputs, nullptr, thread::ThreadPoolOptions())
+            (: (
+            call_expression: RunOptions()
+             identifier: RunOptions
+             argument_list: ()
+              (: (
+              ): )
+            ,: ,
+            compound_literal_expression: ClientSession::FeedType{}
+             qualified_identifier: ClientSession::FeedType
+              namespace_identifier: ClientSession
+              ::: ::
+              type_identifier: FeedType
+             initializer_list: {}
+              {: {
+              }: }
+            ,: ,
+            initializer_list: {c}
+             {: {
+             identifier: c
+             }: }
+            ,: ,
+            initializer_list: {}
+             {: {
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ,: ,
+            null: nullptr
+             nullptr: nullptr
+            ,: ,
+            call_expression: thread::ThreadPoolOptions()
+             qualified_identifier: thread::ThreadPoolOptions
+              namespace_identifier: thread
+              ::: ::
+              identifier: ThreadPoolOptions
+             argument_list: ()
+              (: (
+              ): )
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({-1, 2}, {2}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({-1, 2}, {2}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({-1, 2}, {2})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({-1, 2}, {2})
+            (: (
+            initializer_list: {-1, 2}
+             {: {
+             number_literal: -1
+             ,: ,
+             number_literal: 2
+             }: }
+            ,: ,
+            initializer_list: {2}
+             {: {
+             number_literal: 2
+             }: }
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, CallableWithDefaultThreadPool) {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+      function_declarator: TEST(ClientSessionTest, CallableWithDefaultThreadPool)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, CallableWithDefaultThreadPool)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: CallableWithDefaultThreadPool
+         type_identifier: CallableWithDefaultThreadPool
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  auto a = Placeholder(root, DT_INT32);
+  auto b = Placeholder(root, DT_INT32);
+  auto c = Add(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+  TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: auto a = Placeholder(root, DT_INT32);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Placeholder(root, DT_INT32)
+         identifier: a
+         =: =
+         call_expression: Placeholder(root, DT_INT32)
+          identifier: Placeholder
+          argument_list: (root, DT_INT32)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ): )
+        ;: ;
+       declaration: auto b = Placeholder(root, DT_INT32);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: b = Placeholder(root, DT_INT32)
+         identifier: b
+         =: =
+         call_expression: Placeholder(root, DT_INT32)
+          identifier: Placeholder
+          argument_list: (root, DT_INT32)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ): )
+        ;: ;
+       declaration: auto c = Add(root, a, b);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = Add(root, a, b)
+         identifier: c
+         =: =
+         call_expression: Add(root, a, b)
+          identifier: Add
+          argument_list: (root, a, b)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: a
+           ,: ,
+           identifier: b
+           ): )
+        ;: ;
+       declaration: ClientSession session(root);
+        type_identifier: ClientSession
+        function_declarator: session(root)
+         identifier: session
+         parameter_list: (root)
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       declaration: CallableOptions options;
+        type_identifier: CallableOptions
+        identifier: options
+        ;: ;
+       expression_statement: options.add_feed(a.node()->name());
+        call_expression: options.add_feed(a.node()->name())
+         field_expression: options.add_feed
+          identifier: options
+          .: .
+          field_identifier: add_feed
+         argument_list: (a.node()->name())
+          (: (
+          call_expression: a.node()->name()
+           field_expression: a.node()->name
+            call_expression: a.node()
+             field_expression: a.node
+              identifier: a
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: options.add_feed(b.node()->name());
+        call_expression: options.add_feed(b.node()->name())
+         field_expression: options.add_feed
+          identifier: options
+          .: .
+          field_identifier: add_feed
+         argument_list: (b.node()->name())
+          (: (
+          call_expression: b.node()->name()
+           field_expression: b.node()->name
+            call_expression: b.node()
+             field_expression: b.node
+              identifier: b
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: options.add_fetch(c.node()->name());
+        call_expression: options.add_fetch(c.node()->name())
+         field_expression: options.add_fetch
+          identifier: options
+          .: .
+          field_identifier: add_fetch
+         argument_list: (c.node()->name())
+          (: (
+          call_expression: c.node()->name()
+           field_expression: c.node()->name
+            call_expression: c.node()
+             field_expression: c.node
+              identifier: c
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       declaration: ClientSession::CallableHandle callable;
+        qualified_identifier: ClientSession::CallableHandle
+         namespace_identifier: ClientSession
+         ::: ::
+         type_identifier: CallableHandle
+        identifier: callable
+        ;: ;
+       expression_statement: TF_CHECK_OK(session.MakeCallable(options, &callable));
+        call_expression: TF_CHECK_OK(session.MakeCallable(options, &callable))
+         identifier: TF_CHECK_OK
+         argument_list: (session.MakeCallable(options, &callable))
+          (: (
+          call_expression: session.MakeCallable(options, &callable)
+           field_expression: session.MakeCallable
+            identifier: session
+            .: .
+            field_identifier: MakeCallable
+           argument_list: (options, &callable)
+            (: (
+            identifier: options
+            ,: ,
+            pointer_expression: &callable
+             &: &
+             identifier: callable
+            ): )
+          ): )
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr));
+        call_expression: TF_EXPECT_OK(session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr))
+          (: (
+          call_expression: session.RunCallable(
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr)
+           field_expression: session.RunCallable
+            identifier: session
+            .: .
+            field_identifier: RunCallable
+           argument_list: (
+      callable, {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})},
+      &outputs, nullptr)
+            (: (
+            identifier: callable
+            ,: ,
+            initializer_list: {test::AsTensor<int>({1}, {}), test::AsTensor<int>({41}, {})}
+             {: {
+             call_expression: test::AsTensor<int>({1}, {})
+              qualified_identifier: test::AsTensor<int>
+               namespace_identifier: test
+               ::: ::
+               template_function: AsTensor<int>
+                identifier: AsTensor
+                template_argument_list: <int>
+                 <: <
+                 type_descriptor: int
+                  primitive_type: int
+                 >: >
+              argument_list: ({1}, {})
+               (: (
+               initializer_list: {1}
+                {: {
+                number_literal: 1
+                }: }
+               ,: ,
+               initializer_list: {}
+                {: {
+                }: }
+               ): )
+             ,: ,
+             call_expression: test::AsTensor<int>({41}, {})
+              qualified_identifier: test::AsTensor<int>
+               namespace_identifier: test
+               ::: ::
+               template_function: AsTensor<int>
+                identifier: AsTensor
+                template_argument_list: <int>
+                 <: <
+                 type_descriptor: int
+                  primitive_type: int
+                 >: >
+              argument_list: ({41}, {})
+               (: (
+               initializer_list: {41}
+                {: {
+                number_literal: 41
+                }: }
+               ,: ,
+               initializer_list: {}
+                {: {
+                }: }
+               ): )
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ,: ,
+            null: nullptr
+             nullptr: nullptr
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({42}, {}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({42}, {}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({42}, {})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({42}, {})
+            (: (
+            initializer_list: {42}
+             {: {
+             number_literal: 42
+             }: }
+            ,: ,
+            initializer_list: {}
+             {: {
+             }: }
+            ): )
+          ): )
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.ReleaseCallable(callable));
+        call_expression: TF_EXPECT_OK(session.ReleaseCallable(callable))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.ReleaseCallable(callable))
+          (: (
+          call_expression: session.ReleaseCallable(callable)
+           field_expression: session.ReleaseCallable
+            identifier: session
+            .: .
+            field_identifier: ReleaseCallable
+           argument_list: (callable)
+            (: (
+            identifier: callable
+            ): )
+          ): )
+        ;: ;
+       }: }
+     function_definition: TEST(ClientSessionTest, CallableWithCustomThreadPool) {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+      function_declarator: TEST(ClientSessionTest, CallableWithCustomThreadPool)
+       identifier: TEST
+       parameter_list: (ClientSessionTest, CallableWithCustomThreadPool)
+        (: (
+        parameter_declaration: ClientSessionTest
+         type_identifier: ClientSessionTest
+        ,: ,
+        parameter_declaration: CallableWithCustomThreadPool
+         type_identifier: CallableWithCustomThreadPool
+        ): )
+      compound_statement: {
+  Scope root = Scope::NewRootScope();
+  int num_threads = 3;
+
+  TensorShape data_shape({1, 1});
+  auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+  auto c = BatchMatMul(root, a, b);
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+
+  auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+
+  auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+  ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+  threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+  threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+
+  CallableOptions options;
+  options.add_feed(a.node()->name());
+  options.add_feed(b.node()->name());
+  options.add_fetch(c.node()->name());
+  ClientSession::CallableHandle callable;
+  TF_CHECK_OK(session.MakeCallable(options, &callable));
+
+  // This is needed to have BatchMatMul computation be scheduled in the
+  // intra_op_threadpool.
+  absl::Barrier barrier(num_threads + 1);
+  for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+  barrier.Block();
+
+  TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+  test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+  TF_EXPECT_OK(session.ReleaseCallable(callable));
+  ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+  ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+
+  // Free intra_op_threadpool and wait for its threads to exit before freeing
+  // other objects (e.g. barrier). This is needed to avoid data race.
+  intra_op_threadpool.reset();
+}
+       {: {
+       declaration: Scope root = Scope::NewRootScope();
+        type_identifier: Scope
+        init_declarator: root = Scope::NewRootScope()
+         identifier: root
+         =: =
+         call_expression: Scope::NewRootScope()
+          qualified_identifier: Scope::NewRootScope
+           namespace_identifier: Scope
+           ::: ::
+           identifier: NewRootScope
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: int num_threads = 3;
+        primitive_type: int
+        init_declarator: num_threads = 3
+         identifier: num_threads
+         =: =
+         number_literal: 3
+        ;: ;
+       declaration: TensorShape data_shape({1, 1});
+        type_identifier: TensorShape
+        init_declarator: data_shape({1, 1})
+         identifier: data_shape
+         argument_list: ({1, 1})
+          (: (
+          initializer_list: {1, 1}
+           {: {
+           number_literal: 1
+           ,: ,
+           number_literal: 1
+           }: }
+          ): )
+        ;: ;
+       declaration: auto a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: a = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape))
+         identifier: a
+         =: =
+         call_expression: Placeholder(root, DT_INT32, Placeholder::Shape(data_shape))
+          identifier: Placeholder
+          argument_list: (root, DT_INT32, Placeholder::Shape(data_shape))
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ,: ,
+           call_expression: Placeholder::Shape(data_shape)
+            qualified_identifier: Placeholder::Shape
+             namespace_identifier: Placeholder
+             ::: ::
+             identifier: Shape
+            argument_list: (data_shape)
+             (: (
+             identifier: data_shape
+             ): )
+           ): )
+        ;: ;
+       declaration: auto b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape));
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: b = Placeholder(root, DT_INT32, Placeholder::Shape(data_shape))
+         identifier: b
+         =: =
+         call_expression: Placeholder(root, DT_INT32, Placeholder::Shape(data_shape))
+          identifier: Placeholder
+          argument_list: (root, DT_INT32, Placeholder::Shape(data_shape))
+           (: (
+           identifier: root
+           ,: ,
+           identifier: DT_INT32
+           ,: ,
+           call_expression: Placeholder::Shape(data_shape)
+            qualified_identifier: Placeholder::Shape
+             namespace_identifier: Placeholder
+             ::: ::
+             identifier: Shape
+            argument_list: (data_shape)
+             (: (
+             identifier: data_shape
+             ): )
+           ): )
+        ;: ;
+       declaration: auto c = BatchMatMul(root, a, b);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: c = BatchMatMul(root, a, b)
+         identifier: c
+         =: =
+         call_expression: BatchMatMul(root, a, b)
+          identifier: BatchMatMul
+          argument_list: (root, a, b)
+           (: (
+           identifier: root
+           ,: ,
+           identifier: a
+           ,: ,
+           identifier: b
+           ): )
+        ;: ;
+       declaration: ClientSession session(root);
+        type_identifier: ClientSession
+        function_declarator: session(root)
+         identifier: session
+         parameter_list: (root)
+          (: (
+          parameter_declaration: root
+           type_identifier: root
+          ): )
+        ;: ;
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       declaration: auto inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: inter_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads)
+         identifier: inter_op_threadpool
+         =: =
+         call_expression: absl::make_unique<CustomThreadPoolImpl>(num_threads)
+          qualified_identifier: absl::make_unique<CustomThreadPoolImpl>
+           namespace_identifier: absl
+           ::: ::
+           template_function: make_unique<CustomThreadPoolImpl>
+            identifier: make_unique
+            template_argument_list: <CustomThreadPoolImpl>
+             <: <
+             type_descriptor: CustomThreadPoolImpl
+              type_identifier: CustomThreadPoolImpl
+             >: >
+          argument_list: (num_threads)
+           (: (
+           identifier: num_threads
+           ): )
+        ;: ;
+       expression_statement: ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_EQ(inter_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_EQ
+         argument_list: (inter_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: inter_op_threadpool->GetNumScheduleCalled()
+           field_expression: inter_op_threadpool->GetNumScheduleCalled
+            identifier: inter_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       declaration: auto intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads);
+        placeholder_type_specifier: auto
+         auto: auto
+        init_declarator: intra_op_threadpool =
+      absl::make_unique<CustomThreadPoolImpl>(num_threads)
+         identifier: intra_op_threadpool
+         =: =
+         call_expression: absl::make_unique<CustomThreadPoolImpl>(num_threads)
+          qualified_identifier: absl::make_unique<CustomThreadPoolImpl>
+           namespace_identifier: absl
+           ::: ::
+           template_function: make_unique<CustomThreadPoolImpl>
+            identifier: make_unique
+            template_argument_list: <CustomThreadPoolImpl>
+             <: <
+             type_descriptor: CustomThreadPoolImpl
+              type_identifier: CustomThreadPoolImpl
+             >: >
+          argument_list: (num_threads)
+           (: (
+           identifier: num_threads
+           ): )
+        ;: ;
+       expression_statement: ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_EQ(intra_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_EQ
+         argument_list: (intra_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: intra_op_threadpool->GetNumScheduleCalled()
+           field_expression: intra_op_threadpool->GetNumScheduleCalled
+            identifier: intra_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       declaration: tensorflow::thread::ThreadPoolOptions threadPoolOptions;
+        qualified_identifier: tensorflow::thread::ThreadPoolOptions
+         namespace_identifier: tensorflow
+         ::: ::
+         qualified_identifier: thread::ThreadPoolOptions
+          namespace_identifier: thread
+          ::: ::
+          type_identifier: ThreadPoolOptions
+        identifier: threadPoolOptions
+        ;: ;
+       expression_statement: threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get();
+        assignment_expression: threadPoolOptions.inter_op_threadpool = inter_op_threadpool.get()
+         field_expression: threadPoolOptions.inter_op_threadpool
+          identifier: threadPoolOptions
+          .: .
+          field_identifier: inter_op_threadpool
+         =: =
+         call_expression: inter_op_threadpool.get()
+          field_expression: inter_op_threadpool.get
+           identifier: inter_op_threadpool
+           .: .
+           field_identifier: get
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       expression_statement: threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get();
+        assignment_expression: threadPoolOptions.intra_op_threadpool = intra_op_threadpool.get()
+         field_expression: threadPoolOptions.intra_op_threadpool
+          identifier: threadPoolOptions
+          .: .
+          field_identifier: intra_op_threadpool
+         =: =
+         call_expression: intra_op_threadpool.get()
+          field_expression: intra_op_threadpool.get
+           identifier: intra_op_threadpool
+           .: .
+           field_identifier: get
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       declaration: CallableOptions options;
+        type_identifier: CallableOptions
+        identifier: options
+        ;: ;
+       expression_statement: options.add_feed(a.node()->name());
+        call_expression: options.add_feed(a.node()->name())
+         field_expression: options.add_feed
+          identifier: options
+          .: .
+          field_identifier: add_feed
+         argument_list: (a.node()->name())
+          (: (
+          call_expression: a.node()->name()
+           field_expression: a.node()->name
+            call_expression: a.node()
+             field_expression: a.node
+              identifier: a
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: options.add_feed(b.node()->name());
+        call_expression: options.add_feed(b.node()->name())
+         field_expression: options.add_feed
+          identifier: options
+          .: .
+          field_identifier: add_feed
+         argument_list: (b.node()->name())
+          (: (
+          call_expression: b.node()->name()
+           field_expression: b.node()->name
+            call_expression: b.node()
+             field_expression: b.node
+              identifier: b
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: options.add_fetch(c.node()->name());
+        call_expression: options.add_fetch(c.node()->name())
+         field_expression: options.add_fetch
+          identifier: options
+          .: .
+          field_identifier: add_fetch
+         argument_list: (c.node()->name())
+          (: (
+          call_expression: c.node()->name()
+           field_expression: c.node()->name
+            call_expression: c.node()
+             field_expression: c.node
+              identifier: c
+              .: .
+              field_identifier: node
+             argument_list: ()
+              (: (
+              ): )
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       declaration: ClientSession::CallableHandle callable;
+        qualified_identifier: ClientSession::CallableHandle
+         namespace_identifier: ClientSession
+         ::: ::
+         type_identifier: CallableHandle
+        identifier: callable
+        ;: ;
+       expression_statement: TF_CHECK_OK(session.MakeCallable(options, &callable));
+        call_expression: TF_CHECK_OK(session.MakeCallable(options, &callable))
+         identifier: TF_CHECK_OK
+         argument_list: (session.MakeCallable(options, &callable))
+          (: (
+          call_expression: session.MakeCallable(options, &callable)
+           field_expression: session.MakeCallable
+            identifier: session
+            .: .
+            field_identifier: MakeCallable
+           argument_list: (options, &callable)
+            (: (
+            identifier: options
+            ,: ,
+            pointer_expression: &callable
+             &: &
+             identifier: callable
+            ): )
+          ): )
+        ;: ;
+       comment: // This is needed to have BatchMatMul computation be scheduled in the
+       comment: // intra_op_threadpool.
+       declaration: absl::Barrier barrier(num_threads + 1);
+        qualified_identifier: absl::Barrier
+         namespace_identifier: absl
+         ::: ::
+         type_identifier: Barrier
+        init_declarator: barrier(num_threads + 1)
+         identifier: barrier
+         argument_list: (num_threads + 1)
+          (: (
+          binary_expression: num_threads + 1
+           identifier: num_threads
+           +: +
+           number_literal: 1
+          ): )
+        ;: ;
+       for_statement: for (int i = 0; i < num_threads; i++) {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+        for: for
+        (: (
+        declaration: int i = 0;
+         primitive_type: int
+         init_declarator: i = 0
+          identifier: i
+          =: =
+          number_literal: 0
+         ;: ;
+        binary_expression: i < num_threads
+         identifier: i
+         <: <
+         identifier: num_threads
+        ;: ;
+        update_expression: i++
+         identifier: i
+         ++: ++
+        ): )
+        compound_statement: {
+    intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+  }
+         {: {
+         expression_statement: intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    });
+          call_expression: intra_op_threadpool->Schedule([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    })
+           field_expression: intra_op_threadpool->Schedule
+            identifier: intra_op_threadpool
+            ->: ->
+            field_identifier: Schedule
+           argument_list: ([&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    })
+            (: (
+            lambda_expression: [&barrier, num_threads]() {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    }
+             lambda_capture_specifier: [&barrier, num_threads]
+              [: [
+              &: &
+              identifier: barrier
+              ,: ,
+              identifier: num_threads
+              ]: ]
+             lambda_declarator: ()
+              parameter_list: ()
+               (: (
+               ): )
+             compound_statement: {
+      tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+      barrier.Block();
+    }
+              {: {
+              expression_statement: tensorflow::SetPerThreadMaxParallelism(num_threads - 1);
+               call_expression: tensorflow::SetPerThreadMaxParallelism(num_threads - 1)
+                qualified_identifier: tensorflow::SetPerThreadMaxParallelism
+                 namespace_identifier: tensorflow
+                 ::: ::
+                 identifier: SetPerThreadMaxParallelism
+                argument_list: (num_threads - 1)
+                 (: (
+                 binary_expression: num_threads - 1
+                  identifier: num_threads
+                  -: -
+                  number_literal: 1
+                 ): )
+               ;: ;
+              expression_statement: barrier.Block();
+               call_expression: barrier.Block()
+                field_expression: barrier.Block
+                 identifier: barrier
+                 .: .
+                 field_identifier: Block
+                argument_list: ()
+                 (: (
+                 ): )
+               ;: ;
+              }: }
+            ): )
+          ;: ;
+         }: }
+       expression_statement: barrier.Block();
+        call_expression: barrier.Block()
+         field_expression: barrier.Block
+          identifier: barrier
+          .: .
+          field_identifier: Block
+         argument_list: ()
+          (: (
+          ): )
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions));
+        call_expression: TF_EXPECT_OK(session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions))
+          (: (
+          call_expression: session.RunCallable(
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions)
+           field_expression: session.RunCallable
+            identifier: session
+            .: .
+            field_identifier: RunCallable
+           argument_list: (
+      callable,
+      {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})},
+      &outputs, nullptr, threadPoolOptions)
+            (: (
+            identifier: callable
+            ,: ,
+            initializer_list: {test::AsTensor<int>({2}, {1, 1}), test::AsTensor<int>({10}, {1, 1})}
+             {: {
+             call_expression: test::AsTensor<int>({2}, {1, 1})
+              qualified_identifier: test::AsTensor<int>
+               namespace_identifier: test
+               ::: ::
+               template_function: AsTensor<int>
+                identifier: AsTensor
+                template_argument_list: <int>
+                 <: <
+                 type_descriptor: int
+                  primitive_type: int
+                 >: >
+              argument_list: ({2}, {1, 1})
+               (: (
+               initializer_list: {2}
+                {: {
+                number_literal: 2
+                }: }
+               ,: ,
+               initializer_list: {1, 1}
+                {: {
+                number_literal: 1
+                ,: ,
+                number_literal: 1
+                }: }
+               ): )
+             ,: ,
+             call_expression: test::AsTensor<int>({10}, {1, 1})
+              qualified_identifier: test::AsTensor<int>
+               namespace_identifier: test
+               ::: ::
+               template_function: AsTensor<int>
+                identifier: AsTensor
+                template_argument_list: <int>
+                 <: <
+                 type_descriptor: int
+                  primitive_type: int
+                 >: >
+              argument_list: ({10}, {1, 1})
+               (: (
+               initializer_list: {10}
+                {: {
+                number_literal: 10
+                }: }
+               ,: ,
+               initializer_list: {1, 1}
+                {: {
+                number_literal: 1
+                ,: ,
+                number_literal: 1
+                }: }
+               ): )
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ,: ,
+            null: nullptr
+             nullptr: nullptr
+            ,: ,
+            identifier: threadPoolOptions
+            ): )
+          ): )
+        ;: ;
+       expression_statement: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}));
+        call_expression: test::ExpectTensorEqual<int>(outputs[0], test::AsTensor<int>({20}, {1, 1}))
+         qualified_identifier: test::ExpectTensorEqual<int>
+          namespace_identifier: test
+          ::: ::
+          template_function: ExpectTensorEqual<int>
+           identifier: ExpectTensorEqual
+           template_argument_list: <int>
+            <: <
+            type_descriptor: int
+             primitive_type: int
+            >: >
+         argument_list: (outputs[0], test::AsTensor<int>({20}, {1, 1}))
+          (: (
+          subscript_expression: outputs[0]
+           identifier: outputs
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ,: ,
+          call_expression: test::AsTensor<int>({20}, {1, 1})
+           qualified_identifier: test::AsTensor<int>
+            namespace_identifier: test
+            ::: ::
+            template_function: AsTensor<int>
+             identifier: AsTensor
+             template_argument_list: <int>
+              <: <
+              type_descriptor: int
+               primitive_type: int
+              >: >
+           argument_list: ({20}, {1, 1})
+            (: (
+            initializer_list: {20}
+             {: {
+             number_literal: 20
+             }: }
+            ,: ,
+            initializer_list: {1, 1}
+             {: {
+             number_literal: 1
+             ,: ,
+             number_literal: 1
+             }: }
+            ): )
+          ): )
+        ;: ;
+       expression_statement: TF_EXPECT_OK(session.ReleaseCallable(callable));
+        call_expression: TF_EXPECT_OK(session.ReleaseCallable(callable))
+         identifier: TF_EXPECT_OK
+         argument_list: (session.ReleaseCallable(callable))
+          (: (
+          call_expression: session.ReleaseCallable(callable)
+           field_expression: session.ReleaseCallable
+            identifier: session
+            .: .
+            field_identifier: ReleaseCallable
+           argument_list: (callable)
+            (: (
+            identifier: callable
+            ): )
+          ): )
+        ;: ;
+       expression_statement: ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_GT(inter_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_GT
+         argument_list: (inter_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: inter_op_threadpool->GetNumScheduleCalled()
+           field_expression: inter_op_threadpool->GetNumScheduleCalled
+            identifier: inter_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       expression_statement: ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0);
+        call_expression: ASSERT_GT(intra_op_threadpool->GetNumScheduleCalled(), 0)
+         identifier: ASSERT_GT
+         argument_list: (intra_op_threadpool->GetNumScheduleCalled(), 0)
+          (: (
+          call_expression: intra_op_threadpool->GetNumScheduleCalled()
+           field_expression: intra_op_threadpool->GetNumScheduleCalled
+            identifier: intra_op_threadpool
+            ->: ->
+            field_identifier: GetNumScheduleCalled
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          number_literal: 0
+          ): )
+        ;: ;
+       comment: // Free intra_op_threadpool and wait for its threads to exit before freeing
+       comment: // other objects (e.g. barrier). This is needed to avoid data race.
+       expression_statement: intra_op_threadpool.reset();
+        call_expression: intra_op_threadpool.reset()
+         field_expression: intra_op_threadpool.reset
+          identifier: intra_op_threadpool
+          .: .
+          field_identifier: reset
+         argument_list: ()
+          (: (
+          ): )
+        ;: ;
+       }: }
+     }: }
+   comment: // namespace
+   }: }
+ comment: // namespace tensorflow

@@ -1,35 +1,47 @@
 import os
+import json
+
 from tree_sitter import Language, Parser
 from tree_sitter import Tree as ASTree
 from tree_sitter import Node as ASTNode
-import tree_sitter_python as tspython
-from graphs import DepGraph
+from tree_sitter_language_pack import get_parser
+from ..graphs import DepGraph
 from dotenv import load_dotenv
-import trees 
-from import_resolve import ImportTarget, ExternalDepResolver
+from .. import trees
+from .import_resolve import ImportTarget, ExternalDepResolver
 
-# Load environment variables for Tree-sitter library path
-# load_dotenv()
-# LIBRARY_PATH = os.getenv('TREE_SITTER_LIB_PATH')
-# if not LIBRARY_PATH:
-#     raise ValueError("Environment variable 'TREE_SITTER_LIB_PATH' is not set or is empty.")
-PYTHON_LANGUAGE = Language(tspython.language())
+#NOTE: DepBuilder takes in a set, not a dict - will need to iterate over all language buckets, own builder instance
+IMPORT_SYMS_PATH = os.path.join(os.path.dirname(__file__), "import_symbols.json")
 
 class DepBuilder:
-    def __init__(self, source_set: set[str], root_directory: str):
-        self.source_set: set[str] = source_set
+    import_symbols: dict[str, str] = None
+    def __init__(self, source_set: set[str], root_directory: str, language: str):
+        self.source_set = source_set
         self.dependency_graph: DepGraph = DepGraph()
-        self.parser: Parser = Parser(PYTHON_LANGUAGE)
+        self.parser: Parser = get_parser(language)
         self.visited: set[str] = set()
         self.root_directory: str = root_directory  
         self.dep: ExternalDepResolver = ExternalDepResolver(source_set)
+        self.language: str = language
+        if not DepBuilder.import_symbols:
+            with open(IMPORT_SYMS_PATH, 'r') as f:
+                DepBuilder.import_symbols = json.load(f)
 
+    def set_language(self, language: str) -> None:
+        """Set the language for the parser."""
+        if language == 'python':
+            self.parser = get_parser(language)
+            self.language = language
+        else:
+            raise ValueError(f"Unsupported language: {language}")
+        
+    
     def _parse_AST(self, node: ASTNode, file_path: str) -> list[str]:
         """Parse the AST node to extract import paths."""
         import_paths = set()
         #TODO: We'll need a more flexible solution for filtering for multiple languages.
-        if (node.type == 'import_statement' or node.type == 'import_from_statement'):
-            import_target = ImportTarget(node, file_path, self.dep)
+        if node.type in DepBuilder.import_symbols[self.language]:
+            import_target = ImportTarget(node, file_path, self.dep, self.language)
             target_paths = import_target.extract_import()
             if target_paths:
                 import_paths.update(target_paths)
