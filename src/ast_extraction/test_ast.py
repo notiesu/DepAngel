@@ -7,8 +7,8 @@ import os
 from tree_sitter_language_pack import get_language
 
 CURR_LANGUAGE = get_language("cpp")
-FILE_PATH = os.path.join(os.path.dirname(__file__), "test/client_session_test.cc")
-OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "examples/cpp_ast2.txt")
+FILE_PATH = os.path.join(os.path.dirname(__file__), "test/ops.cc")
+OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "examples/cpp_ast5.txt")
 
 def parse_source_code(file_path):
     parser = Parser(CURR_LANGUAGE)

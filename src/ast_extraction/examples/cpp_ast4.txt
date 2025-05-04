@@ -1,0 +1,5035 @@
+translation_unit: /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "tensorflow/cc/tools/freeze_saved_model.h"
+
+#include <cstddef>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "tensorflow/cc/saved_model/loader.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/function.pb.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/versions.pb.h"
+#include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tensorflow/core/public/session.h"
+
+namespace tensorflow {
+
+namespace {
+
+// Gets tensor names from tensor_info and inserts them into the set of tensor
+// names.
+void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+
+// Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+
+// Gets a map from string node name to NodeDef.
+void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
+// Gets the set of node names needed by `outputs` and the corresponding set of
+// variable nodes to convert.
+void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+
+// Gets a map from variable name to variable value.
+absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+
+// Converts a Variable NodeDef into a Constant NodeDef.
+void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+
+// Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Freezes the subgraph of all nodes needed by `outputs`.
+absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs) {
+  GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+  TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+  return absl::OkStatus();
+}
+
+}  // namespace tensorflow
+
+ comment: /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+ preproc_include: #include "tensorflow/cc/tools/freeze_saved_model.h"
+
+  #include: #include
+  string_literal: "tensorflow/cc/tools/freeze_saved_model.h"
+   ": "
+   string_content: tensorflow/cc/tools/freeze_saved_model.h
+   ": "
+ preproc_include: #include <cstddef>
+
+  #include: #include
+  system_lib_string: <cstddef>
+ preproc_include: #include <queue>
+
+  #include: #include
+  system_lib_string: <queue>
+ preproc_include: #include <unordered_map>
+
+  #include: #include
+  system_lib_string: <unordered_map>
+ preproc_include: #include <unordered_set>
+
+  #include: #include
+  system_lib_string: <unordered_set>
+ preproc_include: #include <vector>
+
+  #include: #include
+  system_lib_string: <vector>
+ preproc_include: #include "absl/log/log.h"
+
+  #include: #include
+  string_literal: "absl/log/log.h"
+   ": "
+   string_content: absl/log/log.h
+   ": "
+ preproc_include: #include "absl/status/status.h"
+
+  #include: #include
+  string_literal: "absl/status/status.h"
+   ": "
+   string_content: absl/status/status.h
+   ": "
+ preproc_include: #include "tensorflow/cc/saved_model/loader.h"
+
+  #include: #include
+  string_literal: "tensorflow/cc/saved_model/loader.h"
+   ": "
+   string_content: tensorflow/cc/saved_model/loader.h
+   ": "
+ preproc_include: #include "xla/tsl/platform/errors.h"
+
+  #include: #include
+  string_literal: "xla/tsl/platform/errors.h"
+   ": "
+   string_content: xla/tsl/platform/errors.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/attr_value.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/attr_value.pb.h"
+   ": "
+   string_content: tensorflow/core/framework/attr_value.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/function.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/function.pb.h"
+   ": "
+   string_content: tensorflow/core/framework/function.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/graph.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/graph.pb.h"
+   ": "
+   string_content: tensorflow/core/framework/graph.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/node_def.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/node_def.pb.h"
+   ": "
+   string_content: tensorflow/core/framework/node_def.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/tensor.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/tensor.h"
+   ": "
+   string_content: tensorflow/core/framework/tensor.h
+   ": "
+ preproc_include: #include "tensorflow/core/framework/versions.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/framework/versions.pb.h"
+   ": "
+   string_content: tensorflow/core/framework/versions.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/lib/strings/str_util.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/lib/strings/str_util.h"
+   ": "
+   string_content: tensorflow/core/lib/strings/str_util.h
+   ": "
+ preproc_include: #include "tensorflow/core/platform/status.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/platform/status.h"
+   ": "
+   string_content: tensorflow/core/platform/status.h
+   ": "
+ preproc_include: #include "tensorflow/core/platform/statusor.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/platform/statusor.h"
+   ": "
+   string_content: tensorflow/core/platform/statusor.h
+   ": "
+ preproc_include: #include "tensorflow/core/platform/types.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/platform/types.h"
+   ": "
+   string_content: tensorflow/core/platform/types.h
+   ": "
+ preproc_include: #include "tensorflow/core/protobuf/meta_graph.pb.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/protobuf/meta_graph.pb.h"
+   ": "
+   string_content: tensorflow/core/protobuf/meta_graph.pb.h
+   ": "
+ preproc_include: #include "tensorflow/core/public/session.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/public/session.h"
+   ": "
+   string_content: tensorflow/core/public/session.h
+   ": "
+ namespace_definition: namespace tensorflow {
+
+namespace {
+
+// Gets tensor names from tensor_info and inserts them into the set of tensor
+// names.
+void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+
+// Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+
+// Gets a map from string node name to NodeDef.
+void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
+// Gets the set of node names needed by `outputs` and the corresponding set of
+// variable nodes to convert.
+void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+
+// Gets a map from variable name to variable value.
+absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+
+// Converts a Variable NodeDef into a Constant NodeDef.
+void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+
+// Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Freezes the subgraph of all nodes needed by `outputs`.
+absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs) {
+  GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+  TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+  return absl::OkStatus();
+}
+
+}
+  namespace: namespace
+  namespace_identifier: tensorflow
+  declaration_list: {
+
+namespace {
+
+// Gets tensor names from tensor_info and inserts them into the set of tensor
+// names.
+void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+
+// Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+
+// Gets a map from string node name to NodeDef.
+void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
+// Gets the set of node names needed by `outputs` and the corresponding set of
+// variable nodes to convert.
+void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+
+// Gets a map from variable name to variable value.
+absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+
+// Converts a Variable NodeDef into a Constant NodeDef.
+void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+
+// Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Freezes the subgraph of all nodes needed by `outputs`.
+absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs) {
+  GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+  TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+  return absl::OkStatus();
+}
+
+}
+   {: {
+   namespace_definition: namespace {
+
+// Gets tensor names from tensor_info and inserts them into the set of tensor
+// names.
+void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+
+// Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+
+// Gets a map from string node name to NodeDef.
+void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
+// Gets the set of node names needed by `outputs` and the corresponding set of
+// variable nodes to convert.
+void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+
+// Gets a map from variable name to variable value.
+absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+
+// Converts a Variable NodeDef into a Constant NodeDef.
+void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+
+// Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Freezes the subgraph of all nodes needed by `outputs`.
+absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+
+}
+    namespace: namespace
+    declaration_list: {
+
+// Gets tensor names from tensor_info and inserts them into the set of tensor
+// names.
+void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+
+// Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+
+// Gets a map from string node name to NodeDef.
+void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+
+// Strips off the tensor part of the tensor_name to get the node_name.
+const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+
+// Gets the set of node names needed by `outputs` and the corresponding set of
+// variable nodes to convert.
+void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+
+// Gets a map from variable name to variable value.
+absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+
+// Converts a Variable NodeDef into a Constant NodeDef.
+void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+
+// Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+
+// Returns the name of the VarHandleOp that provides input (possibly indirectly)
+// to node with node_name. A typical indirect chain of nodes (that can occur due
+// to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+// ReadVariableOp. Calling the function on any of these nodes would return the
+// name of the VarHandleOp.
+absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Looks up the variable handle that provides input to node with node_name,
+// and returns the handle name if the handle corresponds to a variable that we
+// want to freeze (i.e. its name is contained in variable_node_names). If there
+// is no such handle in the graph (or we do not want to save that variable)
+// then NotFound error is returned.
+absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+
+// Freezes the subgraph of all nodes needed by `outputs`.
+absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+
+}
+     {: {
+     comment: // Gets tensor names from tensor_info and inserts them into the set of tensor
+     comment: // names.
+     function_definition: void GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names) {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+      primitive_type: void
+      function_declarator: GetTensorNamesFromTensorInfo(const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names)
+       identifier: GetTensorNamesFromTensorInfo
+       parameter_list: (const TensorInfo& tensor_info,
+                                  std::unordered_set<string>* tensor_names)
+        (: (
+        parameter_declaration: const TensorInfo& tensor_info
+         type_qualifier: const
+          const: const
+         type_identifier: TensorInfo
+         reference_declarator: & tensor_info
+          &: &
+          identifier: tensor_info
+        ,: ,
+        parameter_declaration: std::unordered_set<string>* tensor_names
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         pointer_declarator: * tensor_names
+          *: *
+          identifier: tensor_names
+        ): )
+      compound_statement: {
+  if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+}
+       {: {
+       if_statement: if (tensor_info.has_coo_sparse()) {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  } else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+        if: if
+        condition_clause: (tensor_info.has_coo_sparse())
+         (: (
+         call_expression: tensor_info.has_coo_sparse()
+          field_expression: tensor_info.has_coo_sparse
+           identifier: tensor_info
+           .: .
+           field_identifier: has_coo_sparse
+          argument_list: ()
+           (: (
+           ): )
+         ): )
+        compound_statement: {
+    // If the tensor is sparse we have to add all three tensors of the sparse
+    // representations.
+    const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+    tensor_names->insert(coo_sparse.values_tensor_name());
+    tensor_names->insert(coo_sparse.indices_tensor_name());
+    tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+  }
+         {: {
+         comment: // If the tensor is sparse we have to add all three tensors of the sparse
+         comment: // representations.
+         declaration: const TensorInfo_CooSparse& coo_sparse = tensor_info.coo_sparse();
+          type_qualifier: const
+           const: const
+          type_identifier: TensorInfo_CooSparse
+          init_declarator: & coo_sparse = tensor_info.coo_sparse()
+           reference_declarator: & coo_sparse
+            &: &
+            identifier: coo_sparse
+           =: =
+           call_expression: tensor_info.coo_sparse()
+            field_expression: tensor_info.coo_sparse
+             identifier: tensor_info
+             .: .
+             field_identifier: coo_sparse
+            argument_list: ()
+             (: (
+             ): )
+          ;: ;
+         expression_statement: tensor_names->insert(coo_sparse.values_tensor_name());
+          call_expression: tensor_names->insert(coo_sparse.values_tensor_name())
+           field_expression: tensor_names->insert
+            identifier: tensor_names
+            ->: ->
+            field_identifier: insert
+           argument_list: (coo_sparse.values_tensor_name())
+            (: (
+            call_expression: coo_sparse.values_tensor_name()
+             field_expression: coo_sparse.values_tensor_name
+              identifier: coo_sparse
+              .: .
+              field_identifier: values_tensor_name
+             argument_list: ()
+              (: (
+              ): )
+            ): )
+          ;: ;
+         expression_statement: tensor_names->insert(coo_sparse.indices_tensor_name());
+          call_expression: tensor_names->insert(coo_sparse.indices_tensor_name())
+           field_expression: tensor_names->insert
+            identifier: tensor_names
+            ->: ->
+            field_identifier: insert
+           argument_list: (coo_sparse.indices_tensor_name())
+            (: (
+            call_expression: coo_sparse.indices_tensor_name()
+             field_expression: coo_sparse.indices_tensor_name
+              identifier: coo_sparse
+              .: .
+              field_identifier: indices_tensor_name
+             argument_list: ()
+              (: (
+              ): )
+            ): )
+          ;: ;
+         expression_statement: tensor_names->insert(coo_sparse.dense_shape_tensor_name());
+          call_expression: tensor_names->insert(coo_sparse.dense_shape_tensor_name())
+           field_expression: tensor_names->insert
+            identifier: tensor_names
+            ->: ->
+            field_identifier: insert
+           argument_list: (coo_sparse.dense_shape_tensor_name())
+            (: (
+            call_expression: coo_sparse.dense_shape_tensor_name()
+             field_expression: coo_sparse.dense_shape_tensor_name
+              identifier: coo_sparse
+              .: .
+              field_identifier: dense_shape_tensor_name
+             argument_list: ()
+              (: (
+              ): )
+            ): )
+          ;: ;
+         }: }
+        else_clause: else if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+         else: else
+         if_statement: if (tensor_info.has_composite_tensor()) {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  } else {
+    tensor_names->insert(tensor_info.name());
+  }
+          if: if
+          condition_clause: (tensor_info.has_composite_tensor())
+           (: (
+           call_expression: tensor_info.has_composite_tensor()
+            field_expression: tensor_info.has_composite_tensor
+             identifier: tensor_info
+             .: .
+             field_identifier: has_composite_tensor
+            argument_list: ()
+             (: (
+             ): )
+           ): )
+          compound_statement: {
+    for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+  }
+           {: {
+           for_range_loop: for (const auto& component : tensor_info.composite_tensor().components()) {
+      tensor_names->insert(component.name());
+    }
+            for: for
+            (: (
+            type_qualifier: const
+             const: const
+            placeholder_type_specifier: auto
+             auto: auto
+            reference_declarator: & component
+             &: &
+             identifier: component
+            :: :
+            call_expression: tensor_info.composite_tensor().components()
+             field_expression: tensor_info.composite_tensor().components
+              call_expression: tensor_info.composite_tensor()
+               field_expression: tensor_info.composite_tensor
+                identifier: tensor_info
+                .: .
+                field_identifier: composite_tensor
+               argument_list: ()
+                (: (
+                ): )
+              .: .
+              field_identifier: components
+             argument_list: ()
+              (: (
+              ): )
+            ): )
+            compound_statement: {
+      tensor_names->insert(component.name());
+    }
+             {: {
+             expression_statement: tensor_names->insert(component.name());
+              call_expression: tensor_names->insert(component.name())
+               field_expression: tensor_names->insert
+                identifier: tensor_names
+                ->: ->
+                field_identifier: insert
+               argument_list: (component.name())
+                (: (
+                call_expression: component.name()
+                 field_expression: component.name
+                  identifier: component
+                  .: .
+                  field_identifier: name
+                 argument_list: ()
+                  (: (
+                  ): )
+                ): )
+              ;: ;
+             }: }
+           }: }
+          else_clause: else {
+    tensor_names->insert(tensor_info.name());
+  }
+           else: else
+           compound_statement: {
+    tensor_names->insert(tensor_info.name());
+  }
+            {: {
+            expression_statement: tensor_names->insert(tensor_info.name());
+             call_expression: tensor_names->insert(tensor_info.name())
+              field_expression: tensor_names->insert
+               identifier: tensor_names
+               ->: ->
+               field_identifier: insert
+              argument_list: (tensor_info.name())
+               (: (
+               call_expression: tensor_info.name()
+                field_expression: tensor_info.name
+                 identifier: tensor_info
+                 .: .
+                 field_identifier: name
+                argument_list: ()
+                 (: (
+                 ): )
+               ): )
+             ;: ;
+            }: }
+       }: }
+     comment: // Gets the union of all inputs and outputs of all SignatureDefs in the bundle
+     function_definition: void GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs) {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+      primitive_type: void
+      function_declarator: GetSignatureDefsInputsAndOutputs(
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs)
+       identifier: GetSignatureDefsInputsAndOutputs
+       parameter_list: (
+    const SavedModelBundle& saved_model_bundle,
+    std::unordered_set<string>* inputs, std::unordered_set<string>* outputs)
+        (: (
+        parameter_declaration: const SavedModelBundle& saved_model_bundle
+         type_qualifier: const
+          const: const
+         type_identifier: SavedModelBundle
+         reference_declarator: & saved_model_bundle
+          &: &
+          identifier: saved_model_bundle
+        ,: ,
+        parameter_declaration: std::unordered_set<string>* inputs
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         pointer_declarator: * inputs
+          *: *
+          identifier: inputs
+        ,: ,
+        parameter_declaration: std::unordered_set<string>* outputs
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         pointer_declarator: * outputs
+          *: *
+          identifier: outputs
+        ): )
+      compound_statement: {
+  for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+}
+       {: {
+       for_range_loop: for (auto& sigdef_elem : saved_model_bundle.meta_graph_def.signature_def()) {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+        for: for
+        (: (
+        placeholder_type_specifier: auto
+         auto: auto
+        reference_declarator: & sigdef_elem
+         &: &
+         identifier: sigdef_elem
+        :: :
+        call_expression: saved_model_bundle.meta_graph_def.signature_def()
+         field_expression: saved_model_bundle.meta_graph_def.signature_def
+          field_expression: saved_model_bundle.meta_graph_def
+           identifier: saved_model_bundle
+           .: .
+           field_identifier: meta_graph_def
+          .: .
+          field_identifier: signature_def
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+        compound_statement: {
+    const SignatureDef& signature_def = sigdef_elem.second;
+    for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+    for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+  }
+         {: {
+         declaration: const SignatureDef& signature_def = sigdef_elem.second;
+          type_qualifier: const
+           const: const
+          type_identifier: SignatureDef
+          init_declarator: & signature_def = sigdef_elem.second
+           reference_declarator: & signature_def
+            &: &
+            identifier: signature_def
+           =: =
+           field_expression: sigdef_elem.second
+            identifier: sigdef_elem
+            .: .
+            field_identifier: second
+          ;: ;
+         for_range_loop: for (auto& input_elem : signature_def.inputs()) {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+          for: for
+          (: (
+          placeholder_type_specifier: auto
+           auto: auto
+          reference_declarator: & input_elem
+           &: &
+           identifier: input_elem
+          :: :
+          call_expression: signature_def.inputs()
+           field_expression: signature_def.inputs
+            identifier: signature_def
+            .: .
+            field_identifier: inputs
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+          compound_statement: {
+      GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+    }
+           {: {
+           expression_statement: GetTensorNamesFromTensorInfo(input_elem.second, inputs);
+            call_expression: GetTensorNamesFromTensorInfo(input_elem.second, inputs)
+             identifier: GetTensorNamesFromTensorInfo
+             argument_list: (input_elem.second, inputs)
+              (: (
+              field_expression: input_elem.second
+               identifier: input_elem
+               .: .
+               field_identifier: second
+              ,: ,
+              identifier: inputs
+              ): )
+            ;: ;
+           }: }
+         for_range_loop: for (auto& output_elem : signature_def.outputs()) {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+          for: for
+          (: (
+          placeholder_type_specifier: auto
+           auto: auto
+          reference_declarator: & output_elem
+           &: &
+           identifier: output_elem
+          :: :
+          call_expression: signature_def.outputs()
+           field_expression: signature_def.outputs
+            identifier: signature_def
+            .: .
+            field_identifier: outputs
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+          compound_statement: {
+      GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+    }
+           {: {
+           expression_statement: GetTensorNamesFromTensorInfo(output_elem.second, outputs);
+            call_expression: GetTensorNamesFromTensorInfo(output_elem.second, outputs)
+             identifier: GetTensorNamesFromTensorInfo
+             argument_list: (output_elem.second, outputs)
+              (: (
+              field_expression: output_elem.second
+               identifier: output_elem
+               .: .
+               field_identifier: second
+              ,: ,
+              identifier: outputs
+              ): )
+            ;: ;
+           }: }
+         }: }
+       }: }
+     comment: // Gets a map from string node name to NodeDef.
+     function_definition: void GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map) {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+      primitive_type: void
+      function_declarator: GetNodeNameToNodeDefMap(
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map)
+       identifier: GetNodeNameToNodeDefMap
+       parameter_list: (
+    GraphDef* graph_def,
+    std::unordered_map<string, NodeDef*>* name_to_node_map)
+        (: (
+        parameter_declaration: GraphDef* graph_def
+         type_identifier: GraphDef
+         pointer_declarator: * graph_def
+          *: *
+          identifier: graph_def
+        ,: ,
+        parameter_declaration: std::unordered_map<string, NodeDef*>* name_to_node_map
+         qualified_identifier: std::unordered_map<string, NodeDef*>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, NodeDef*>
+           type_identifier: unordered_map
+           template_argument_list: <string, NodeDef*>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: NodeDef*
+             type_identifier: NodeDef
+             abstract_pointer_declarator: *
+              *: *
+            >: >
+         pointer_declarator: * name_to_node_map
+          *: *
+          identifier: name_to_node_map
+        ): )
+      compound_statement: {
+  for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+}
+       {: {
+       for_statement: for (size_t i = 0; i < graph_def->node_size(); i++) {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+        for: for
+        (: (
+        declaration: size_t i = 0;
+         primitive_type: size_t
+         init_declarator: i = 0
+          identifier: i
+          =: =
+          number_literal: 0
+         ;: ;
+        binary_expression: i < graph_def->node_size()
+         identifier: i
+         <: <
+         call_expression: graph_def->node_size()
+          field_expression: graph_def->node_size
+           identifier: graph_def
+           ->: ->
+           field_identifier: node_size
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+        update_expression: i++
+         identifier: i
+         ++: ++
+        ): )
+        compound_statement: {
+    NodeDef* node = graph_def->mutable_node(i);
+    (*name_to_node_map)[node->name()] = node;
+  }
+         {: {
+         declaration: NodeDef* node = graph_def->mutable_node(i);
+          type_identifier: NodeDef
+          init_declarator: * node = graph_def->mutable_node(i)
+           pointer_declarator: * node
+            *: *
+            identifier: node
+           =: =
+           call_expression: graph_def->mutable_node(i)
+            field_expression: graph_def->mutable_node
+             identifier: graph_def
+             ->: ->
+             field_identifier: mutable_node
+            argument_list: (i)
+             (: (
+             identifier: i
+             ): )
+          ;: ;
+         expression_statement: (*name_to_node_map)[node->name()] = node;
+          assignment_expression: (*name_to_node_map)[node->name()] = node
+           subscript_expression: (*name_to_node_map)[node->name()]
+            parenthesized_expression: (*name_to_node_map)
+             (: (
+             pointer_expression: *name_to_node_map
+              *: *
+              identifier: name_to_node_map
+             ): )
+            subscript_argument_list: [node->name()]
+             [: [
+             call_expression: node->name()
+              field_expression: node->name
+               identifier: node
+               ->: ->
+               field_identifier: name
+              argument_list: ()
+               (: (
+               ): )
+             ]: ]
+           =: =
+           identifier: node
+          ;: ;
+         }: }
+       }: }
+     comment: // Strips off the tensor part of the tensor_name to get the node_name.
+     function_definition: const string GetNodeNameFromTensorName(string tensor_name) {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+      type_qualifier: const
+       const: const
+      type_identifier: string
+      function_declarator: GetNodeNameFromTensorName(string tensor_name)
+       identifier: GetNodeNameFromTensorName
+       parameter_list: (string tensor_name)
+        (: (
+        parameter_declaration: string tensor_name
+         type_identifier: string
+         identifier: tensor_name
+        ): )
+      compound_statement: {
+  if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+  std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+  return tensor_name_parts[0];
+}
+       {: {
+       if_statement: if (tensor_name[0] == '^') {
+    tensor_name.erase(0, 1);
+  }
+        if: if
+        condition_clause: (tensor_name[0] == '^')
+         (: (
+         binary_expression: tensor_name[0] == '^'
+          subscript_expression: tensor_name[0]
+           identifier: tensor_name
+           subscript_argument_list: [0]
+            [: [
+            number_literal: 0
+            ]: ]
+          ==: ==
+          char_literal: '^'
+           ': '
+           character: ^
+           ': '
+         ): )
+        compound_statement: {
+    tensor_name.erase(0, 1);
+  }
+         {: {
+         expression_statement: tensor_name.erase(0, 1);
+          call_expression: tensor_name.erase(0, 1)
+           field_expression: tensor_name.erase
+            identifier: tensor_name
+            .: .
+            field_identifier: erase
+           argument_list: (0, 1)
+            (: (
+            number_literal: 0
+            ,: ,
+            number_literal: 1
+            ): )
+          ;: ;
+         }: }
+       declaration: std::vector<string> tensor_name_parts = str_util::Split(tensor_name, ':');
+        qualified_identifier: std::vector<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<string>
+          type_identifier: vector
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        init_declarator: tensor_name_parts = str_util::Split(tensor_name, ':')
+         identifier: tensor_name_parts
+         =: =
+         call_expression: str_util::Split(tensor_name, ':')
+          qualified_identifier: str_util::Split
+           namespace_identifier: str_util
+           ::: ::
+           identifier: Split
+          argument_list: (tensor_name, ':')
+           (: (
+           identifier: tensor_name
+           ,: ,
+           char_literal: ':'
+            ': '
+            character: :
+            ': '
+           ): )
+        ;: ;
+       return_statement: return tensor_name_parts[0];
+        return: return
+        subscript_expression: tensor_name_parts[0]
+         identifier: tensor_name_parts
+         subscript_argument_list: [0]
+          [: [
+          number_literal: 0
+          ]: ]
+        ;: ;
+       }: }
+     comment: // Gets the set of node names needed by `outputs` and the corresponding set of
+     comment: // variable nodes to convert.
+     function_definition: void GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names) {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+      primitive_type: void
+      function_declarator: GetReachableNodesAndVariables(
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names)
+       identifier: GetReachableNodesAndVariables
+       parameter_list: (
+    GraphDef* graph_def, const std::unordered_set<string>& outputs,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string>* reachable_node_names,
+    std::unordered_set<string>* variable_node_names)
+        (: (
+        parameter_declaration: GraphDef* graph_def
+         type_identifier: GraphDef
+         pointer_declarator: * graph_def
+          *: *
+          identifier: graph_def
+        ,: ,
+        parameter_declaration: const std::unordered_set<string>& outputs
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         reference_declarator: & outputs
+          &: &
+          identifier: outputs
+        ,: ,
+        parameter_declaration: const std::unordered_map<string, NodeDef*>& name_to_node_map
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_map<string, NodeDef*>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, NodeDef*>
+           type_identifier: unordered_map
+           template_argument_list: <string, NodeDef*>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: NodeDef*
+             type_identifier: NodeDef
+             abstract_pointer_declarator: *
+              *: *
+            >: >
+         reference_declarator: & name_to_node_map
+          &: &
+          identifier: name_to_node_map
+        ,: ,
+        parameter_declaration: std::unordered_set<string>* reachable_node_names
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         pointer_declarator: * reachable_node_names
+          *: *
+          identifier: reachable_node_names
+        ,: ,
+        parameter_declaration: std::unordered_set<string>* variable_node_names
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         pointer_declarator: * variable_node_names
+          *: *
+          identifier: variable_node_names
+        ): )
+      compound_statement: {
+  // TODO(suharshs): Add support for ResourceVariables.
+  static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+
+  std::queue<string> nodes_to_visit;
+  for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+  // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+  while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+}
+       {: {
+       comment: // TODO(suharshs): Add support for ResourceVariables.
+       declaration: static const std::unordered_set<string>* kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"});
+        storage_class_specifier: static
+         static: static
+        type_qualifier: const
+         const: const
+        qualified_identifier: std::unordered_set<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: unordered_set<string>
+          type_identifier: unordered_set
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        init_declarator: * kVariableTypes =
+      new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"})
+         pointer_declarator: * kVariableTypes
+          *: *
+          identifier: kVariableTypes
+         =: =
+         new_expression: new std::unordered_set<string>({"Variable", "VariableV2", "VarHandleOp"})
+          new: new
+          qualified_identifier: std::unordered_set<string>
+           namespace_identifier: std
+           ::: ::
+           template_type: unordered_set<string>
+            type_identifier: unordered_set
+            template_argument_list: <string>
+             <: <
+             type_descriptor: string
+              type_identifier: string
+             >: >
+          argument_list: ({"Variable", "VariableV2", "VarHandleOp"})
+           (: (
+           initializer_list: {"Variable", "VariableV2", "VarHandleOp"}
+            {: {
+            string_literal: "Variable"
+             ": "
+             string_content: Variable
+             ": "
+            ,: ,
+            string_literal: "VariableV2"
+             ": "
+             string_content: VariableV2
+             ": "
+            ,: ,
+            string_literal: "VarHandleOp"
+             ": "
+             string_content: VarHandleOp
+             ": "
+            }: }
+           ): )
+        ;: ;
+       declaration: std::queue<string> nodes_to_visit;
+        qualified_identifier: std::queue<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: queue<string>
+          type_identifier: queue
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        identifier: nodes_to_visit
+        ;: ;
+       for_range_loop: for (const string& output_tensor_name : outputs) {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+        for: for
+        (: (
+        type_qualifier: const
+         const: const
+        type_identifier: string
+        reference_declarator: & output_tensor_name
+         &: &
+         identifier: output_tensor_name
+        :: :
+        identifier: outputs
+        ): )
+        compound_statement: {
+    nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+  }
+         {: {
+         expression_statement: nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name));
+          call_expression: nodes_to_visit.push(GetNodeNameFromTensorName(output_tensor_name))
+           field_expression: nodes_to_visit.push
+            identifier: nodes_to_visit
+            .: .
+            field_identifier: push
+           argument_list: (GetNodeNameFromTensorName(output_tensor_name))
+            (: (
+            call_expression: GetNodeNameFromTensorName(output_tensor_name)
+             identifier: GetNodeNameFromTensorName
+             argument_list: (output_tensor_name)
+              (: (
+              identifier: output_tensor_name
+              ): )
+            ): )
+          ;: ;
+         }: }
+       comment: // We do a traversal backwards from the outputs specified in the MetaGraphDef.
+       while_statement: while (!nodes_to_visit.empty()) {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+        while: while
+        condition_clause: (!nodes_to_visit.empty())
+         (: (
+         unary_expression: !nodes_to_visit.empty()
+          !: !
+          call_expression: nodes_to_visit.empty()
+           field_expression: nodes_to_visit.empty
+            identifier: nodes_to_visit
+            .: .
+            field_identifier: empty
+           argument_list: ()
+            (: (
+            ): )
+         ): )
+        compound_statement: {
+    const string node_name = nodes_to_visit.front();
+    nodes_to_visit.pop();
+    if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+    reachable_node_names->insert(node_name);
+    NodeDef* node = name_to_node_map.at(node_name);
+    if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+    for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+  }
+         {: {
+         declaration: const string node_name = nodes_to_visit.front();
+          type_qualifier: const
+           const: const
+          type_identifier: string
+          init_declarator: node_name = nodes_to_visit.front()
+           identifier: node_name
+           =: =
+           call_expression: nodes_to_visit.front()
+            field_expression: nodes_to_visit.front
+             identifier: nodes_to_visit
+             .: .
+             field_identifier: front
+            argument_list: ()
+             (: (
+             ): )
+          ;: ;
+         expression_statement: nodes_to_visit.pop();
+          call_expression: nodes_to_visit.pop()
+           field_expression: nodes_to_visit.pop
+            identifier: nodes_to_visit
+            .: .
+            field_identifier: pop
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         if_statement: if (reachable_node_names->find(node_name) != reachable_node_names->end()) {
+      continue;
+    }
+          if: if
+          condition_clause: (reachable_node_names->find(node_name) != reachable_node_names->end())
+           (: (
+           binary_expression: reachable_node_names->find(node_name) != reachable_node_names->end()
+            call_expression: reachable_node_names->find(node_name)
+             field_expression: reachable_node_names->find
+              identifier: reachable_node_names
+              ->: ->
+              field_identifier: find
+             argument_list: (node_name)
+              (: (
+              identifier: node_name
+              ): )
+            !=: !=
+            call_expression: reachable_node_names->end()
+             field_expression: reachable_node_names->end
+              identifier: reachable_node_names
+              ->: ->
+              field_identifier: end
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          compound_statement: {
+      continue;
+    }
+           {: {
+           continue_statement: continue;
+            continue: continue
+            ;: ;
+           }: }
+         expression_statement: reachable_node_names->insert(node_name);
+          call_expression: reachable_node_names->insert(node_name)
+           field_expression: reachable_node_names->insert
+            identifier: reachable_node_names
+            ->: ->
+            field_identifier: insert
+           argument_list: (node_name)
+            (: (
+            identifier: node_name
+            ): )
+          ;: ;
+         declaration: NodeDef* node = name_to_node_map.at(node_name);
+          type_identifier: NodeDef
+          init_declarator: * node = name_to_node_map.at(node_name)
+           pointer_declarator: * node
+            *: *
+            identifier: node
+           =: =
+           call_expression: name_to_node_map.at(node_name)
+            field_expression: name_to_node_map.at
+             identifier: name_to_node_map
+             .: .
+             field_identifier: at
+            argument_list: (node_name)
+             (: (
+             identifier: node_name
+             ): )
+          ;: ;
+         if_statement: if (kVariableTypes->find(node->op()) != kVariableTypes->end()) {
+      variable_node_names->insert(node->name());
+    }
+          if: if
+          condition_clause: (kVariableTypes->find(node->op()) != kVariableTypes->end())
+           (: (
+           binary_expression: kVariableTypes->find(node->op()) != kVariableTypes->end()
+            call_expression: kVariableTypes->find(node->op())
+             field_expression: kVariableTypes->find
+              identifier: kVariableTypes
+              ->: ->
+              field_identifier: find
+             argument_list: (node->op())
+              (: (
+              call_expression: node->op()
+               field_expression: node->op
+                identifier: node
+                ->: ->
+                field_identifier: op
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            !=: !=
+            call_expression: kVariableTypes->end()
+             field_expression: kVariableTypes->end
+              identifier: kVariableTypes
+              ->: ->
+              field_identifier: end
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          compound_statement: {
+      variable_node_names->insert(node->name());
+    }
+           {: {
+           expression_statement: variable_node_names->insert(node->name());
+            call_expression: variable_node_names->insert(node->name())
+             field_expression: variable_node_names->insert
+              identifier: variable_node_names
+              ->: ->
+              field_identifier: insert
+             argument_list: (node->name())
+              (: (
+              call_expression: node->name()
+               field_expression: node->name
+                identifier: node
+                ->: ->
+                field_identifier: name
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            ;: ;
+           }: }
+         for_range_loop: for (const string& input_tensor_name : node->input()) {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+          for: for
+          (: (
+          type_qualifier: const
+           const: const
+          type_identifier: string
+          reference_declarator: & input_tensor_name
+           &: &
+           identifier: input_tensor_name
+          :: :
+          call_expression: node->input()
+           field_expression: node->input
+            identifier: node
+            ->: ->
+            field_identifier: input
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+          compound_statement: {
+      nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+    }
+           {: {
+           expression_statement: nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name));
+            call_expression: nodes_to_visit.push(GetNodeNameFromTensorName(input_tensor_name))
+             field_expression: nodes_to_visit.push
+              identifier: nodes_to_visit
+              .: .
+              field_identifier: push
+             argument_list: (GetNodeNameFromTensorName(input_tensor_name))
+              (: (
+              call_expression: GetNodeNameFromTensorName(input_tensor_name)
+               identifier: GetNodeNameFromTensorName
+               argument_list: (input_tensor_name)
+                (: (
+                identifier: input_tensor_name
+                ): )
+              ): )
+            ;: ;
+           }: }
+         }: }
+       }: }
+     comment: // Gets a map from variable name to variable value.
+     function_definition: absl::Status GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map) {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+      qualified_identifier: absl::Status
+       namespace_identifier: absl
+       ::: ::
+       type_identifier: Status
+      function_declarator: GetVariableNameToTensorMap(
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map)
+       identifier: GetVariableNameToTensorMap
+       parameter_list: (
+    Session* session,
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    std::unordered_set<string> variable_names_set,
+    std::unordered_map<string, Tensor>* variable_name_to_value_map)
+        (: (
+        parameter_declaration: Session* session
+         type_identifier: Session
+         pointer_declarator: * session
+          *: *
+          identifier: session
+        ,: ,
+        parameter_declaration: const std::unordered_map<string, NodeDef*>& name_to_node_map
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_map<string, NodeDef*>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, NodeDef*>
+           type_identifier: unordered_map
+           template_argument_list: <string, NodeDef*>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: NodeDef*
+             type_identifier: NodeDef
+             abstract_pointer_declarator: *
+              *: *
+            >: >
+         reference_declarator: & name_to_node_map
+          &: &
+          identifier: name_to_node_map
+        ,: ,
+        parameter_declaration: std::unordered_set<string> variable_names_set
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         identifier: variable_names_set
+        ,: ,
+        parameter_declaration: std::unordered_map<string, Tensor>* variable_name_to_value_map
+         qualified_identifier: std::unordered_map<string, Tensor>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, Tensor>
+           type_identifier: unordered_map
+           template_argument_list: <string, Tensor>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: Tensor
+             type_identifier: Tensor
+            >: >
+         pointer_declarator: * variable_name_to_value_map
+          *: *
+          identifier: variable_name_to_value_map
+        ): )
+      compound_statement: {
+  if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<string> variable_names;
+  variable_names.reserve(variable_names_set.size());
+  std::vector<string> tensor_names;
+  tensor_names.reserve(variable_names_set.size());
+  for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+  std::vector<Tensor> outputs;
+  TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+  for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+  return absl::OkStatus();
+}
+       {: {
+       if_statement: if (variable_names_set.empty()) {
+    return absl::OkStatus();
+  }
+        if: if
+        condition_clause: (variable_names_set.empty())
+         (: (
+         call_expression: variable_names_set.empty()
+          field_expression: variable_names_set.empty
+           identifier: variable_names_set
+           .: .
+           field_identifier: empty
+          argument_list: ()
+           (: (
+           ): )
+         ): )
+        compound_statement: {
+    return absl::OkStatus();
+  }
+         {: {
+         return_statement: return absl::OkStatus();
+          return: return
+          call_expression: absl::OkStatus()
+           qualified_identifier: absl::OkStatus
+            namespace_identifier: absl
+            ::: ::
+            identifier: OkStatus
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         }: }
+       declaration: std::vector<string> variable_names;
+        qualified_identifier: std::vector<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<string>
+          type_identifier: vector
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        identifier: variable_names
+        ;: ;
+       expression_statement: variable_names.reserve(variable_names_set.size());
+        call_expression: variable_names.reserve(variable_names_set.size())
+         field_expression: variable_names.reserve
+          identifier: variable_names
+          .: .
+          field_identifier: reserve
+         argument_list: (variable_names_set.size())
+          (: (
+          call_expression: variable_names_set.size()
+           field_expression: variable_names_set.size
+            identifier: variable_names_set
+            .: .
+            field_identifier: size
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       declaration: std::vector<string> tensor_names;
+        qualified_identifier: std::vector<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<string>
+          type_identifier: vector
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        identifier: tensor_names
+        ;: ;
+       expression_statement: tensor_names.reserve(variable_names_set.size());
+        call_expression: tensor_names.reserve(variable_names_set.size())
+         field_expression: tensor_names.reserve
+          identifier: tensor_names
+          .: .
+          field_identifier: reserve
+         argument_list: (variable_names_set.size())
+          (: (
+          call_expression: variable_names_set.size()
+           field_expression: variable_names_set.size
+            identifier: variable_names_set
+            .: .
+            field_identifier: size
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       for_range_loop: for (const string& node_name : variable_names_set) {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+        for: for
+        (: (
+        type_qualifier: const
+         const: const
+        type_identifier: string
+        reference_declarator: & node_name
+         &: &
+         identifier: node_name
+        :: :
+        identifier: variable_names_set
+        ): )
+        compound_statement: {
+    variable_names.push_back(node_name);
+    NodeDef* node_def = name_to_node_map.at(node_name);
+    if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+  }
+         {: {
+         expression_statement: variable_names.push_back(node_name);
+          call_expression: variable_names.push_back(node_name)
+           field_expression: variable_names.push_back
+            identifier: variable_names
+            .: .
+            field_identifier: push_back
+           argument_list: (node_name)
+            (: (
+            identifier: node_name
+            ): )
+          ;: ;
+         declaration: NodeDef* node_def = name_to_node_map.at(node_name);
+          type_identifier: NodeDef
+          init_declarator: * node_def = name_to_node_map.at(node_name)
+           pointer_declarator: * node_def
+            *: *
+            identifier: node_def
+           =: =
+           call_expression: name_to_node_map.at(node_name)
+            field_expression: name_to_node_map.at
+             identifier: name_to_node_map
+             .: .
+             field_identifier: at
+            argument_list: (node_name)
+             (: (
+             identifier: node_name
+             ): )
+          ;: ;
+         if_statement: if (node_def->op() == "VarHandleOp") {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    } else {
+      tensor_names.push_back(node_name + ":0");
+    }
+          if: if
+          condition_clause: (node_def->op() == "VarHandleOp")
+           (: (
+           binary_expression: node_def->op() == "VarHandleOp"
+            call_expression: node_def->op()
+             field_expression: node_def->op
+              identifier: node_def
+              ->: ->
+              field_identifier: op
+             argument_list: ()
+              (: (
+              ): )
+            ==: ==
+            string_literal: "VarHandleOp"
+             ": "
+             string_content: VarHandleOp
+             ": "
+           ): )
+          compound_statement: {
+      // If this is a resource variable, we have to run the corresponding
+      // ReadVariableOp.
+      tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+    }
+           {: {
+           comment: // If this is a resource variable, we have to run the corresponding
+           comment: // ReadVariableOp.
+           expression_statement: tensor_names.push_back(node_name + "/Read/ReadVariableOp:0");
+            call_expression: tensor_names.push_back(node_name + "/Read/ReadVariableOp:0")
+             field_expression: tensor_names.push_back
+              identifier: tensor_names
+              .: .
+              field_identifier: push_back
+             argument_list: (node_name + "/Read/ReadVariableOp:0")
+              (: (
+              binary_expression: node_name + "/Read/ReadVariableOp:0"
+               identifier: node_name
+               +: +
+               string_literal: "/Read/ReadVariableOp:0"
+                ": "
+                string_content: /Read/ReadVariableOp:0
+                ": "
+              ): )
+            ;: ;
+           }: }
+          else_clause: else {
+      tensor_names.push_back(node_name + ":0");
+    }
+           else: else
+           compound_statement: {
+      tensor_names.push_back(node_name + ":0");
+    }
+            {: {
+            expression_statement: tensor_names.push_back(node_name + ":0");
+             call_expression: tensor_names.push_back(node_name + ":0")
+              field_expression: tensor_names.push_back
+               identifier: tensor_names
+               .: .
+               field_identifier: push_back
+              argument_list: (node_name + ":0")
+               (: (
+               binary_expression: node_name + ":0"
+                identifier: node_name
+                +: +
+                string_literal: ":0"
+                 ": "
+                 string_content: :0
+                 ": "
+               ): )
+             ;: ;
+            }: }
+         }: }
+       declaration: std::vector<Tensor> outputs;
+        qualified_identifier: std::vector<Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: vector<Tensor>
+          type_identifier: vector
+          template_argument_list: <Tensor>
+           <: <
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: outputs
+        ;: ;
+       expression_statement: TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs));
+        call_expression: TF_RETURN_IF_ERROR(
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs))
+         identifier: TF_RETURN_IF_ERROR
+         argument_list: (
+      session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs))
+          (: (
+          call_expression: session->Run(/* inputs */ {}, tensor_names, /* targets */ {}, &outputs)
+           field_expression: session->Run
+            identifier: session
+            ->: ->
+            field_identifier: Run
+           argument_list: (/* inputs */ {}, tensor_names, /* targets */ {}, &outputs)
+            (: (
+            comment: /* inputs */
+            initializer_list: {}
+             {: {
+             }: }
+            ,: ,
+            identifier: tensor_names
+            ,: ,
+            comment: /* targets */
+            initializer_list: {}
+             {: {
+             }: }
+            ,: ,
+            pointer_expression: &outputs
+             &: &
+             identifier: outputs
+            ): )
+          ): )
+        ;: ;
+       for_statement: for (size_t i = 0; i < variable_names.size(); i++) {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+        for: for
+        (: (
+        declaration: size_t i = 0;
+         primitive_type: size_t
+         init_declarator: i = 0
+          identifier: i
+          =: =
+          number_literal: 0
+         ;: ;
+        binary_expression: i < variable_names.size()
+         identifier: i
+         <: <
+         call_expression: variable_names.size()
+          field_expression: variable_names.size
+           identifier: variable_names
+           .: .
+           field_identifier: size
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+        update_expression: i++
+         identifier: i
+         ++: ++
+        ): )
+        compound_statement: {
+    (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+  }
+         {: {
+         expression_statement: (*variable_name_to_value_map)[variable_names[i]] = outputs[i];
+          assignment_expression: (*variable_name_to_value_map)[variable_names[i]] = outputs[i]
+           subscript_expression: (*variable_name_to_value_map)[variable_names[i]]
+            parenthesized_expression: (*variable_name_to_value_map)
+             (: (
+             pointer_expression: *variable_name_to_value_map
+              *: *
+              identifier: variable_name_to_value_map
+             ): )
+            subscript_argument_list: [variable_names[i]]
+             [: [
+             subscript_expression: variable_names[i]
+              identifier: variable_names
+              subscript_argument_list: [i]
+               [: [
+               identifier: i
+               ]: ]
+             ]: ]
+           =: =
+           subscript_expression: outputs[i]
+            identifier: outputs
+            subscript_argument_list: [i]
+             [: [
+             identifier: i
+             ]: ]
+          ;: ;
+         }: }
+       return_statement: return absl::OkStatus();
+        return: return
+        call_expression: absl::OkStatus()
+         qualified_identifier: absl::OkStatus
+          namespace_identifier: absl
+          ::: ::
+          identifier: OkStatus
+         argument_list: ()
+          (: (
+          ): )
+        ;: ;
+       }: }
+     comment: // Converts a Variable NodeDef into a Constant NodeDef.
+     function_definition: void ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node) {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+      primitive_type: void
+      function_declarator: ConvertVariableToConstant(const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node)
+       identifier: ConvertVariableToConstant
+       parameter_list: (const NodeDef& variable_node,
+                               const Tensor& variable_value,
+                               NodeDef* const_node)
+        (: (
+        parameter_declaration: const NodeDef& variable_node
+         type_qualifier: const
+          const: const
+         type_identifier: NodeDef
+         reference_declarator: & variable_node
+          &: &
+          identifier: variable_node
+        ,: ,
+        parameter_declaration: const Tensor& variable_value
+         type_qualifier: const
+          const: const
+         type_identifier: Tensor
+         reference_declarator: & variable_value
+          &: &
+          identifier: variable_value
+        ,: ,
+        parameter_declaration: NodeDef* const_node
+         type_identifier: NodeDef
+         pointer_declarator: * const_node
+          *: *
+          identifier: const_node
+        ): )
+      compound_statement: {
+  const_node->set_name(variable_node.name());
+  const_node->set_op("Const");
+  (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+  variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+}
+       {: {
+       expression_statement: const_node->set_name(variable_node.name());
+        call_expression: const_node->set_name(variable_node.name())
+         field_expression: const_node->set_name
+          identifier: const_node
+          ->: ->
+          field_identifier: set_name
+         argument_list: (variable_node.name())
+          (: (
+          call_expression: variable_node.name()
+           field_expression: variable_node.name
+            identifier: variable_node
+            .: .
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: const_node->set_op("Const");
+        call_expression: const_node->set_op("Const")
+         field_expression: const_node->set_op
+          identifier: const_node
+          ->: ->
+          field_identifier: set_op
+         argument_list: ("Const")
+          (: (
+          string_literal: "Const"
+           ": "
+           string_content: Const
+           ": "
+          ): )
+        ;: ;
+       expression_statement: (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype");
+        assignment_expression: (*const_node->mutable_attr())["dtype"] = variable_node.attr().at("dtype")
+         subscript_expression: (*const_node->mutable_attr())["dtype"]
+          parenthesized_expression: (*const_node->mutable_attr())
+           (: (
+           pointer_expression: *const_node->mutable_attr()
+            *: *
+            call_expression: const_node->mutable_attr()
+             field_expression: const_node->mutable_attr
+              identifier: const_node
+              ->: ->
+              field_identifier: mutable_attr
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          subscript_argument_list: ["dtype"]
+           [: [
+           string_literal: "dtype"
+            ": "
+            string_content: dtype
+            ": "
+           ]: ]
+         =: =
+         call_expression: variable_node.attr().at("dtype")
+          field_expression: variable_node.attr().at
+           call_expression: variable_node.attr()
+            field_expression: variable_node.attr
+             identifier: variable_node
+             .: .
+             field_identifier: attr
+            argument_list: ()
+             (: (
+             ): )
+           .: .
+           field_identifier: at
+          argument_list: ("dtype")
+           (: (
+           string_literal: "dtype"
+            ": "
+            string_content: dtype
+            ": "
+           ): )
+        ;: ;
+       expression_statement: variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor());
+        call_expression: variable_value.AsProtoTensorContent(
+      (*const_node->mutable_attr())["value"].mutable_tensor())
+         field_expression: variable_value.AsProtoTensorContent
+          identifier: variable_value
+          .: .
+          field_identifier: AsProtoTensorContent
+         argument_list: (
+      (*const_node->mutable_attr())["value"].mutable_tensor())
+          (: (
+          call_expression: (*const_node->mutable_attr())["value"].mutable_tensor()
+           field_expression: (*const_node->mutable_attr())["value"].mutable_tensor
+            subscript_expression: (*const_node->mutable_attr())["value"]
+             parenthesized_expression: (*const_node->mutable_attr())
+              (: (
+              pointer_expression: *const_node->mutable_attr()
+               *: *
+               call_expression: const_node->mutable_attr()
+                field_expression: const_node->mutable_attr
+                 identifier: const_node
+                 ->: ->
+                 field_identifier: mutable_attr
+                argument_list: ()
+                 (: (
+                 ): )
+              ): )
+             subscript_argument_list: ["value"]
+              [: [
+              string_literal: "value"
+               ": "
+               string_content: value
+               ": "
+              ]: ]
+            .: .
+            field_identifier: mutable_tensor
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       }: }
+     comment: // Converts a ReadVariableOp NodeDef to an Identity NodeDef.
+     function_definition: void ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node) {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+      primitive_type: void
+      function_declarator: ConvertReadVariableOpToIdentity(const NodeDef& node,
+                                     NodeDef* identity_node)
+       identifier: ConvertReadVariableOpToIdentity
+       parameter_list: (const NodeDef& node,
+                                     NodeDef* identity_node)
+        (: (
+        parameter_declaration: const NodeDef& node
+         type_qualifier: const
+          const: const
+         type_identifier: NodeDef
+         reference_declarator: & node
+          &: &
+          identifier: node
+        ,: ,
+        parameter_declaration: NodeDef* identity_node
+         type_identifier: NodeDef
+         pointer_declarator: * identity_node
+          *: *
+          identifier: identity_node
+        ): )
+      compound_statement: {
+  identity_node->set_name(node.name());
+  identity_node->set_op("Identity");
+  (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+  identity_node->add_input(node.input(0));
+}
+       {: {
+       expression_statement: identity_node->set_name(node.name());
+        call_expression: identity_node->set_name(node.name())
+         field_expression: identity_node->set_name
+          identifier: identity_node
+          ->: ->
+          field_identifier: set_name
+         argument_list: (node.name())
+          (: (
+          call_expression: node.name()
+           field_expression: node.name
+            identifier: node
+            .: .
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        ;: ;
+       expression_statement: identity_node->set_op("Identity");
+        call_expression: identity_node->set_op("Identity")
+         field_expression: identity_node->set_op
+          identifier: identity_node
+          ->: ->
+          field_identifier: set_op
+         argument_list: ("Identity")
+          (: (
+          string_literal: "Identity"
+           ": "
+           string_content: Identity
+           ": "
+          ): )
+        ;: ;
+       expression_statement: (*identity_node->mutable_attr())["T"] = node.attr().at("dtype");
+        assignment_expression: (*identity_node->mutable_attr())["T"] = node.attr().at("dtype")
+         subscript_expression: (*identity_node->mutable_attr())["T"]
+          parenthesized_expression: (*identity_node->mutable_attr())
+           (: (
+           pointer_expression: *identity_node->mutable_attr()
+            *: *
+            call_expression: identity_node->mutable_attr()
+             field_expression: identity_node->mutable_attr
+              identifier: identity_node
+              ->: ->
+              field_identifier: mutable_attr
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          subscript_argument_list: ["T"]
+           [: [
+           string_literal: "T"
+            ": "
+            string_content: T
+            ": "
+           ]: ]
+         =: =
+         call_expression: node.attr().at("dtype")
+          field_expression: node.attr().at
+           call_expression: node.attr()
+            field_expression: node.attr
+             identifier: node
+             .: .
+             field_identifier: attr
+            argument_list: ()
+             (: (
+             ): )
+           .: .
+           field_identifier: at
+          argument_list: ("dtype")
+           (: (
+           string_literal: "dtype"
+            ": "
+            string_content: dtype
+            ": "
+           ): )
+        ;: ;
+       expression_statement: identity_node->add_input(node.input(0));
+        call_expression: identity_node->add_input(node.input(0))
+         field_expression: identity_node->add_input
+          identifier: identity_node
+          ->: ->
+          field_identifier: add_input
+         argument_list: (node.input(0))
+          (: (
+          call_expression: node.input(0)
+           field_expression: node.input
+            identifier: node
+            .: .
+            field_identifier: input
+           argument_list: (0)
+            (: (
+            number_literal: 0
+            ): )
+          ): )
+        ;: ;
+       }: }
+     comment: // Returns the name of the VarHandleOp that provides input (possibly indirectly)
+     comment: // to node with node_name. A typical indirect chain of nodes (that can occur due
+     comment: // to graph inlining) is the following: VarHandleOp -> Identity -> Identity ->
+     comment: // ReadVariableOp. Calling the function on any of these nodes would return the
+     comment: // name of the VarHandleOp.
+     function_definition: absl::StatusOr<string> GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name) {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+      qualified_identifier: absl::StatusOr<string>
+       namespace_identifier: absl
+       ::: ::
+       template_type: StatusOr<string>
+        type_identifier: StatusOr
+        template_argument_list: <string>
+         <: <
+         type_descriptor: string
+          type_identifier: string
+         >: >
+      function_declarator: GetVarHandleName(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name)
+       identifier: GetVarHandleName
+       parameter_list: (
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name)
+        (: (
+        parameter_declaration: const std::unordered_map<string, NodeDef*>& name_to_node_map
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_map<string, NodeDef*>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, NodeDef*>
+           type_identifier: unordered_map
+           template_argument_list: <string, NodeDef*>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: NodeDef*
+             type_identifier: NodeDef
+             abstract_pointer_declarator: *
+              *: *
+            >: >
+         reference_declarator: & name_to_node_map
+          &: &
+          identifier: name_to_node_map
+        ,: ,
+        parameter_declaration: string node_name
+         type_identifier: string
+         identifier: node_name
+        ): )
+      compound_statement: {
+  const NodeDef* node = name_to_node_map.at(node_name);
+  while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+  if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+       {: {
+       declaration: const NodeDef* node = name_to_node_map.at(node_name);
+        type_qualifier: const
+         const: const
+        type_identifier: NodeDef
+        init_declarator: * node = name_to_node_map.at(node_name)
+         pointer_declarator: * node
+          *: *
+          identifier: node
+         =: =
+         call_expression: name_to_node_map.at(node_name)
+          field_expression: name_to_node_map.at
+           identifier: name_to_node_map
+           .: .
+           field_identifier: at
+          argument_list: (node_name)
+           (: (
+           identifier: node_name
+           ): )
+        ;: ;
+       while_statement: while (node->input_size() > 0) {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+        while: while
+        condition_clause: (node->input_size() > 0)
+         (: (
+         binary_expression: node->input_size() > 0
+          call_expression: node->input_size()
+           field_expression: node->input_size
+            identifier: node
+            ->: ->
+            field_identifier: input_size
+           argument_list: ()
+            (: (
+            ): )
+          >: >
+          number_literal: 0
+         ): )
+        compound_statement: {
+    auto parent = name_to_node_map.find(node->input(0));
+    if (parent == name_to_node_map.end()) break;
+    node = parent->second;
+    if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+  }
+         {: {
+         declaration: auto parent = name_to_node_map.find(node->input(0));
+          placeholder_type_specifier: auto
+           auto: auto
+          init_declarator: parent = name_to_node_map.find(node->input(0))
+           identifier: parent
+           =: =
+           call_expression: name_to_node_map.find(node->input(0))
+            field_expression: name_to_node_map.find
+             identifier: name_to_node_map
+             .: .
+             field_identifier: find
+            argument_list: (node->input(0))
+             (: (
+             call_expression: node->input(0)
+              field_expression: node->input
+               identifier: node
+               ->: ->
+               field_identifier: input
+              argument_list: (0)
+               (: (
+               number_literal: 0
+               ): )
+             ): )
+          ;: ;
+         if_statement: if (parent == name_to_node_map.end()) break;
+          if: if
+          condition_clause: (parent == name_to_node_map.end())
+           (: (
+           binary_expression: parent == name_to_node_map.end()
+            identifier: parent
+            ==: ==
+            call_expression: name_to_node_map.end()
+             field_expression: name_to_node_map.end
+              identifier: name_to_node_map
+              .: .
+              field_identifier: end
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          break_statement: break;
+           break: break
+           ;: ;
+         expression_statement: node = parent->second;
+          assignment_expression: node = parent->second
+           identifier: node
+           =: =
+           field_expression: parent->second
+            identifier: parent
+            ->: ->
+            field_identifier: second
+          ;: ;
+         if_statement: if (node->op() != "Identity") {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+          if: if
+          condition_clause: (node->op() != "Identity")
+           (: (
+           binary_expression: node->op() != "Identity"
+            call_expression: node->op()
+             field_expression: node->op
+              identifier: node
+              ->: ->
+              field_identifier: op
+             argument_list: ()
+              (: (
+              ): )
+            !=: !=
+            string_literal: "Identity"
+             ": "
+             string_content: Identity
+             ": "
+           ): )
+          compound_statement: {
+      VLOG(2) << "Stopping at non-identity node " << node->op();
+      break;
+    }
+           {: {
+           expression_statement: VLOG(2) << "Stopping at non-identity node " << node->op();
+            binary_expression: VLOG(2) << "Stopping at non-identity node " << node->op()
+             binary_expression: VLOG(2) << "Stopping at non-identity node "
+              call_expression: VLOG(2)
+               identifier: VLOG
+               argument_list: (2)
+                (: (
+                number_literal: 2
+                ): )
+              <<: <<
+              string_literal: "Stopping at non-identity node "
+               ": "
+               string_content: Stopping at non-identity node 
+               ": "
+             <<: <<
+             call_expression: node->op()
+              field_expression: node->op
+               identifier: node
+               ->: ->
+               field_identifier: op
+              argument_list: ()
+               (: (
+               ): )
+            ;: ;
+           break_statement: break;
+            break: break
+            ;: ;
+           }: }
+         }: }
+       if_statement: if (node->op() == "VarHandleOp") {
+    return node->name();
+  }
+        if: if
+        condition_clause: (node->op() == "VarHandleOp")
+         (: (
+         binary_expression: node->op() == "VarHandleOp"
+          call_expression: node->op()
+           field_expression: node->op
+            identifier: node
+            ->: ->
+            field_identifier: op
+           argument_list: ()
+            (: (
+            ): )
+          ==: ==
+          string_literal: "VarHandleOp"
+           ": "
+           string_content: VarHandleOp
+           ": "
+         ): )
+        compound_statement: {
+    return node->name();
+  }
+         {: {
+         return_statement: return node->name();
+          return: return
+          call_expression: node->name()
+           field_expression: node->name
+            identifier: node
+            ->: ->
+            field_identifier: name
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         }: }
+       return_statement: return absl::NotFoundError("No VarHandleOp ancestor found");
+        return: return
+        call_expression: absl::NotFoundError("No VarHandleOp ancestor found")
+         qualified_identifier: absl::NotFoundError
+          namespace_identifier: absl
+          ::: ::
+          identifier: NotFoundError
+         argument_list: ("No VarHandleOp ancestor found")
+          (: (
+          string_literal: "No VarHandleOp ancestor found"
+           ": "
+           string_content: No VarHandleOp ancestor found
+           ": "
+          ): )
+        ;: ;
+       }: }
+     comment: // Looks up the variable handle that provides input to node with node_name,
+     comment: // and returns the handle name if the handle corresponds to a variable that we
+     comment: // want to freeze (i.e. its name is contained in variable_node_names). If there
+     comment: // is no such handle in the graph (or we do not want to save that variable)
+     comment: // then NotFound error is returned.
+     function_definition: absl::StatusOr<string> GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names) {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+      qualified_identifier: absl::StatusOr<string>
+       namespace_identifier: absl
+       ::: ::
+       template_type: StatusOr<string>
+        type_identifier: StatusOr
+        template_argument_list: <string>
+         <: <
+         type_descriptor: string
+          type_identifier: string
+         >: >
+      function_declarator: GetHandleNameIfNeedsToFreeze(
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names)
+       identifier: GetHandleNameIfNeedsToFreeze
+       parameter_list: (
+    const std::unordered_map<string, NodeDef*>& name_to_node_map,
+    string node_name, const std::unordered_set<string>& variable_node_names)
+        (: (
+        parameter_declaration: const std::unordered_map<string, NodeDef*>& name_to_node_map
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_map<string, NodeDef*>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_map<string, NodeDef*>
+           type_identifier: unordered_map
+           template_argument_list: <string, NodeDef*>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            ,: ,
+            type_descriptor: NodeDef*
+             type_identifier: NodeDef
+             abstract_pointer_declarator: *
+              *: *
+            >: >
+         reference_declarator: & name_to_node_map
+          &: &
+          identifier: name_to_node_map
+        ,: ,
+        parameter_declaration: string node_name
+         type_identifier: string
+         identifier: node_name
+        ,: ,
+        parameter_declaration: const std::unordered_set<string>& variable_node_names
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         reference_declarator: & variable_node_names
+          &: &
+          identifier: variable_node_names
+        ): )
+      compound_statement: {
+  absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+  if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+  return absl::NotFoundError("No VarHandleOp ancestor found");
+}
+       {: {
+       declaration: absl::StatusOr<string> var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name);
+        qualified_identifier: absl::StatusOr<string>
+         namespace_identifier: absl
+         ::: ::
+         template_type: StatusOr<string>
+          type_identifier: StatusOr
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        init_declarator: var_handle_name =
+      GetVarHandleName(name_to_node_map, node_name)
+         identifier: var_handle_name
+         =: =
+         call_expression: GetVarHandleName(name_to_node_map, node_name)
+          identifier: GetVarHandleName
+          argument_list: (name_to_node_map, node_name)
+           (: (
+           identifier: name_to_node_map
+           ,: ,
+           identifier: node_name
+           ): )
+        ;: ;
+       if_statement: if (var_handle_name.ok() && variable_node_names.count(*var_handle_name)) {
+    return var_handle_name;
+  }
+        if: if
+        condition_clause: (var_handle_name.ok() && variable_node_names.count(*var_handle_name))
+         (: (
+         binary_expression: var_handle_name.ok() && variable_node_names.count(*var_handle_name)
+          call_expression: var_handle_name.ok()
+           field_expression: var_handle_name.ok
+            identifier: var_handle_name
+            .: .
+            field_identifier: ok
+           argument_list: ()
+            (: (
+            ): )
+          &&: &&
+          call_expression: variable_node_names.count(*var_handle_name)
+           field_expression: variable_node_names.count
+            identifier: variable_node_names
+            .: .
+            field_identifier: count
+           argument_list: (*var_handle_name)
+            (: (
+            pointer_expression: *var_handle_name
+             *: *
+             identifier: var_handle_name
+            ): )
+         ): )
+        compound_statement: {
+    return var_handle_name;
+  }
+         {: {
+         return_statement: return var_handle_name;
+          return: return
+          identifier: var_handle_name
+          ;: ;
+         }: }
+       return_statement: return absl::NotFoundError("No VarHandleOp ancestor found");
+        return: return
+        call_expression: absl::NotFoundError("No VarHandleOp ancestor found")
+         qualified_identifier: absl::NotFoundError
+          namespace_identifier: absl
+          ::: ::
+          identifier: NotFoundError
+         argument_list: ("No VarHandleOp ancestor found")
+          (: (
+          string_literal: "No VarHandleOp ancestor found"
+           ": "
+           string_content: No VarHandleOp ancestor found
+           ": "
+          ): )
+        ;: ;
+       }: }
+     comment: // Freezes the subgraph of all nodes needed by `outputs`.
+     function_definition: absl::Status FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def) {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+      qualified_identifier: absl::Status
+       namespace_identifier: absl
+       ::: ::
+       type_identifier: Status
+      function_declarator: FreezeGraphDef(const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def)
+       identifier: FreezeGraphDef
+       parameter_list: (const SavedModelBundle& saved_model_bundle,
+                            const std::unordered_set<string>& outputs,
+                            GraphDef* frozen_graph_def)
+        (: (
+        parameter_declaration: const SavedModelBundle& saved_model_bundle
+         type_qualifier: const
+          const: const
+         type_identifier: SavedModelBundle
+         reference_declarator: & saved_model_bundle
+          &: &
+          identifier: saved_model_bundle
+        ,: ,
+        parameter_declaration: const std::unordered_set<string>& outputs
+         type_qualifier: const
+          const: const
+         qualified_identifier: std::unordered_set<string>
+          namespace_identifier: std
+          ::: ::
+          template_type: unordered_set<string>
+           type_identifier: unordered_set
+           template_argument_list: <string>
+            <: <
+            type_descriptor: string
+             type_identifier: string
+            >: >
+         reference_declarator: & outputs
+          &: &
+          identifier: outputs
+        ,: ,
+        parameter_declaration: GraphDef* frozen_graph_def
+         type_identifier: GraphDef
+         pointer_declarator: * frozen_graph_def
+          *: *
+          identifier: frozen_graph_def
+        ): )
+      compound_statement: {
+  GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+  // Copy versions and library as-is from original graph.
+  *frozen_graph_def->mutable_versions() = graph_def.versions();
+  *frozen_graph_def->mutable_library() = graph_def.library();
+  // If the graph is empty there is nothing left to do.
+  if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+  // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+  // the a string node name. These inputs are used when doing our backwards
+  // traversal.
+  std::unordered_map<string, NodeDef*> name_to_node_map;
+  GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+  std::unordered_set<string> reachable_node_names;
+  std::unordered_set<string> variable_node_names;
+  GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+  std::unordered_map<string, Tensor> variable_to_value_map;
+  TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+  // We copy the nodes in the same order they were in the original graph_def.
+  for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+  return absl::OkStatus();
+}
+       {: {
+       declaration: GraphDef graph_def = saved_model_bundle.meta_graph_def.graph_def();
+        type_identifier: GraphDef
+        init_declarator: graph_def = saved_model_bundle.meta_graph_def.graph_def()
+         identifier: graph_def
+         =: =
+         call_expression: saved_model_bundle.meta_graph_def.graph_def()
+          field_expression: saved_model_bundle.meta_graph_def.graph_def
+           field_expression: saved_model_bundle.meta_graph_def
+            identifier: saved_model_bundle
+            .: .
+            field_identifier: meta_graph_def
+           .: .
+           field_identifier: graph_def
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       comment: // Copy versions and library as-is from original graph.
+       expression_statement: *frozen_graph_def->mutable_versions() = graph_def.versions();
+        assignment_expression: *frozen_graph_def->mutable_versions() = graph_def.versions()
+         pointer_expression: *frozen_graph_def->mutable_versions()
+          *: *
+          call_expression: frozen_graph_def->mutable_versions()
+           field_expression: frozen_graph_def->mutable_versions
+            identifier: frozen_graph_def
+            ->: ->
+            field_identifier: mutable_versions
+           argument_list: ()
+            (: (
+            ): )
+         =: =
+         call_expression: graph_def.versions()
+          field_expression: graph_def.versions
+           identifier: graph_def
+           .: .
+           field_identifier: versions
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       expression_statement: *frozen_graph_def->mutable_library() = graph_def.library();
+        assignment_expression: *frozen_graph_def->mutable_library() = graph_def.library()
+         pointer_expression: *frozen_graph_def->mutable_library()
+          *: *
+          call_expression: frozen_graph_def->mutable_library()
+           field_expression: frozen_graph_def->mutable_library
+            identifier: frozen_graph_def
+            ->: ->
+            field_identifier: mutable_library
+           argument_list: ()
+            (: (
+            ): )
+         =: =
+         call_expression: graph_def.library()
+          field_expression: graph_def.library
+           identifier: graph_def
+           .: .
+           field_identifier: library
+          argument_list: ()
+           (: (
+           ): )
+        ;: ;
+       comment: // If the graph is empty there is nothing left to do.
+       if_statement: if (graph_def.node_size() == 0) {
+    return absl::OkStatus();
+  }
+        if: if
+        condition_clause: (graph_def.node_size() == 0)
+         (: (
+         binary_expression: graph_def.node_size() == 0
+          call_expression: graph_def.node_size()
+           field_expression: graph_def.node_size
+            identifier: graph_def
+            .: .
+            field_identifier: node_size
+           argument_list: ()
+            (: (
+            ): )
+          ==: ==
+          number_literal: 0
+         ): )
+        compound_statement: {
+    return absl::OkStatus();
+  }
+         {: {
+         return_statement: return absl::OkStatus();
+          return: return
+          call_expression: absl::OkStatus()
+           qualified_identifier: absl::OkStatus
+            namespace_identifier: absl
+            ::: ::
+            identifier: OkStatus
+           argument_list: ()
+            (: (
+            ): )
+          ;: ;
+         }: }
+       comment: // name_to_node_map is needed to get the inputs from the NodeDef corresponding
+       comment: // the a string node name. These inputs are used when doing our backwards
+       comment: // traversal.
+       declaration: std::unordered_map<string, NodeDef*> name_to_node_map;
+        qualified_identifier: std::unordered_map<string, NodeDef*>
+         namespace_identifier: std
+         ::: ::
+         template_type: unordered_map<string, NodeDef*>
+          type_identifier: unordered_map
+          template_argument_list: <string, NodeDef*>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           ,: ,
+           type_descriptor: NodeDef*
+            type_identifier: NodeDef
+            abstract_pointer_declarator: *
+             *: *
+           >: >
+        identifier: name_to_node_map
+        ;: ;
+       expression_statement: GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map);
+        call_expression: GetNodeNameToNodeDefMap(&graph_def, &name_to_node_map)
+         identifier: GetNodeNameToNodeDefMap
+         argument_list: (&graph_def, &name_to_node_map)
+          (: (
+          pointer_expression: &graph_def
+           &: &
+           identifier: graph_def
+          ,: ,
+          pointer_expression: &name_to_node_map
+           &: &
+           identifier: name_to_node_map
+          ): )
+        ;: ;
+       declaration: std::unordered_set<string> reachable_node_names;
+        qualified_identifier: std::unordered_set<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: unordered_set<string>
+          type_identifier: unordered_set
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        identifier: reachable_node_names
+        ;: ;
+       declaration: std::unordered_set<string> variable_node_names;
+        qualified_identifier: std::unordered_set<string>
+         namespace_identifier: std
+         ::: ::
+         template_type: unordered_set<string>
+          type_identifier: unordered_set
+          template_argument_list: <string>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           >: >
+        identifier: variable_node_names
+        ;: ;
+       expression_statement: GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names);
+        call_expression: GetReachableNodesAndVariables(&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names)
+         identifier: GetReachableNodesAndVariables
+         argument_list: (&graph_def, outputs, name_to_node_map,
+                                &reachable_node_names, &variable_node_names)
+          (: (
+          pointer_expression: &graph_def
+           &: &
+           identifier: graph_def
+          ,: ,
+          identifier: outputs
+          ,: ,
+          identifier: name_to_node_map
+          ,: ,
+          pointer_expression: &reachable_node_names
+           &: &
+           identifier: reachable_node_names
+          ,: ,
+          pointer_expression: &variable_node_names
+           &: &
+           identifier: variable_node_names
+          ): )
+        ;: ;
+       declaration: std::unordered_map<string, Tensor> variable_to_value_map;
+        qualified_identifier: std::unordered_map<string, Tensor>
+         namespace_identifier: std
+         ::: ::
+         template_type: unordered_map<string, Tensor>
+          type_identifier: unordered_map
+          template_argument_list: <string, Tensor>
+           <: <
+           type_descriptor: string
+            type_identifier: string
+           ,: ,
+           type_descriptor: Tensor
+            type_identifier: Tensor
+           >: >
+        identifier: variable_to_value_map
+        ;: ;
+       expression_statement: TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map));
+        call_expression: TF_RETURN_IF_ERROR(GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map))
+         identifier: TF_RETURN_IF_ERROR
+         argument_list: (GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map))
+          (: (
+          call_expression: GetVariableNameToTensorMap(
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map)
+           identifier: GetVariableNameToTensorMap
+           argument_list: (
+      saved_model_bundle.session.get(), name_to_node_map, variable_node_names,
+      &variable_to_value_map)
+            (: (
+            call_expression: saved_model_bundle.session.get()
+             field_expression: saved_model_bundle.session.get
+              field_expression: saved_model_bundle.session
+               identifier: saved_model_bundle
+               .: .
+               field_identifier: session
+              .: .
+              field_identifier: get
+             argument_list: ()
+              (: (
+              ): )
+            ,: ,
+            identifier: name_to_node_map
+            ,: ,
+            identifier: variable_node_names
+            ,: ,
+            pointer_expression: &variable_to_value_map
+             &: &
+             identifier: variable_to_value_map
+            ): )
+          ): )
+        ;: ;
+       comment: // We copy the nodes in the same order they were in the original graph_def.
+       for_range_loop: for (const NodeDef& node : graph_def.node()) {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+        for: for
+        (: (
+        type_qualifier: const
+         const: const
+        type_identifier: NodeDef
+        reference_declarator: & node
+         &: &
+         identifier: node
+        :: :
+        call_expression: graph_def.node()
+         field_expression: graph_def.node
+          identifier: graph_def
+          .: .
+          field_identifier: node
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+        compound_statement: {
+    if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+    if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+    // If the node isn't a variable, just copy the node as-is.
+    *frozen_graph_def->add_node() = node;
+  }
+         {: {
+         if_statement: if (reachable_node_names.find(node.name()) == reachable_node_names.end()) {
+      continue;
+    }
+          if: if
+          condition_clause: (reachable_node_names.find(node.name()) == reachable_node_names.end())
+           (: (
+           binary_expression: reachable_node_names.find(node.name()) == reachable_node_names.end()
+            call_expression: reachable_node_names.find(node.name())
+             field_expression: reachable_node_names.find
+              identifier: reachable_node_names
+              .: .
+              field_identifier: find
+             argument_list: (node.name())
+              (: (
+              call_expression: node.name()
+               field_expression: node.name
+                identifier: node
+                .: .
+                field_identifier: name
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            ==: ==
+            call_expression: reachable_node_names.end()
+             field_expression: reachable_node_names.end
+              identifier: reachable_node_names
+              .: .
+              field_identifier: end
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          compound_statement: {
+      continue;
+    }
+           {: {
+           continue_statement: continue;
+            continue: continue
+            ;: ;
+           }: }
+         if_statement: if (variable_node_names.find(node.name()) != variable_node_names.end()) {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+          if: if
+          condition_clause: (variable_node_names.find(node.name()) != variable_node_names.end())
+           (: (
+           binary_expression: variable_node_names.find(node.name()) != variable_node_names.end()
+            call_expression: variable_node_names.find(node.name())
+             field_expression: variable_node_names.find
+              identifier: variable_node_names
+              .: .
+              field_identifier: find
+             argument_list: (node.name())
+              (: (
+              call_expression: node.name()
+               field_expression: node.name
+                identifier: node
+                .: .
+                field_identifier: name
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            !=: !=
+            call_expression: variable_node_names.end()
+             field_expression: variable_node_names.end
+              identifier: variable_node_names
+              .: .
+              field_identifier: end
+             argument_list: ()
+              (: (
+              ): )
+           ): )
+          compound_statement: {
+      ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+      continue;
+    }
+           {: {
+           expression_statement: ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node());
+            call_expression: ConvertVariableToConstant(node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node())
+             identifier: ConvertVariableToConstant
+             argument_list: (node, variable_to_value_map[node.name()],
+                                frozen_graph_def->add_node())
+              (: (
+              identifier: node
+              ,: ,
+              subscript_expression: variable_to_value_map[node.name()]
+               identifier: variable_to_value_map
+               subscript_argument_list: [node.name()]
+                [: [
+                call_expression: node.name()
+                 field_expression: node.name
+                  identifier: node
+                  .: .
+                  field_identifier: name
+                 argument_list: ()
+                  (: (
+                  ): )
+                ]: ]
+              ,: ,
+              call_expression: frozen_graph_def->add_node()
+               field_expression: frozen_graph_def->add_node
+                identifier: frozen_graph_def
+                ->: ->
+                field_identifier: add_node
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            ;: ;
+           continue_statement: continue;
+            continue: continue
+            ;: ;
+           }: }
+          else_clause: else if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+           else: else
+           if_statement: if (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()) {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    } else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+            if: if
+            condition_clause: (node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok())
+             (: (
+             binary_expression: node.op() == "ReadVariableOp" &&
+               GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()
+              binary_expression: node.op() == "ReadVariableOp"
+               call_expression: node.op()
+                field_expression: node.op
+                 identifier: node
+                 .: .
+                 field_identifier: op
+                argument_list: ()
+                 (: (
+                 ): )
+               ==: ==
+               string_literal: "ReadVariableOp"
+                ": "
+                string_content: ReadVariableOp
+                ": "
+              &&: &&
+              call_expression: GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok()
+               field_expression: GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                   .ok
+                call_expression: GetHandleNameIfNeedsToFreeze(name_to_node_map, node.name(),
+                                            variable_node_names)
+                 identifier: GetHandleNameIfNeedsToFreeze
+                 argument_list: (name_to_node_map, node.name(),
+                                            variable_node_names)
+                  (: (
+                  identifier: name_to_node_map
+                  ,: ,
+                  call_expression: node.name()
+                   field_expression: node.name
+                    identifier: node
+                    .: .
+                    field_identifier: name
+                   argument_list: ()
+                    (: (
+                    ): )
+                  ,: ,
+                  identifier: variable_node_names
+                  ): )
+                .: .
+                field_identifier: ok
+               argument_list: ()
+                (: (
+                ): )
+             ): )
+            compound_statement: {
+      // If the node is a ReadVariableOp, its input VarHandleOp will be
+      // converted to a Constant, so we will need to convert it to an Identity.
+      ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+      continue;
+    }
+             {: {
+             comment: // If the node is a ReadVariableOp, its input VarHandleOp will be
+             comment: // converted to a Constant, so we will need to convert it to an Identity.
+             expression_statement: ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node());
+              call_expression: ConvertReadVariableOpToIdentity(node, frozen_graph_def->add_node())
+               identifier: ConvertReadVariableOpToIdentity
+               argument_list: (node, frozen_graph_def->add_node())
+                (: (
+                identifier: node
+                ,: ,
+                call_expression: frozen_graph_def->add_node()
+                 field_expression: frozen_graph_def->add_node
+                  identifier: frozen_graph_def
+                  ->: ->
+                  field_identifier: add_node
+                 argument_list: ()
+                  (: (
+                  ): )
+                ): )
+              ;: ;
+             continue_statement: continue;
+              continue: continue
+              ;: ;
+             }: }
+            else_clause: else if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+             else: else
+             if_statement: if (node.op() == "Identity") {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+              if: if
+              condition_clause: (node.op() == "Identity")
+               (: (
+               binary_expression: node.op() == "Identity"
+                call_expression: node.op()
+                 field_expression: node.op
+                  identifier: node
+                  .: .
+                  field_identifier: op
+                 argument_list: ()
+                  (: (
+                  ): )
+                ==: ==
+                string_literal: "Identity"
+                 ": "
+                 string_content: Identity
+                 ": "
+               ): )
+              compound_statement: {
+      absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+      if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+    }
+               {: {
+               declaration: absl::StatusOr<string> handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names);
+                qualified_identifier: absl::StatusOr<string>
+                 namespace_identifier: absl
+                 ::: ::
+                 template_type: StatusOr<string>
+                  type_identifier: StatusOr
+                  template_argument_list: <string>
+                   <: <
+                   type_descriptor: string
+                    type_identifier: string
+                   >: >
+                init_declarator: handle_name = GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names)
+                 identifier: handle_name
+                 =: =
+                 call_expression: GetHandleNameIfNeedsToFreeze(
+          name_to_node_map, node.name(), variable_node_names)
+                  identifier: GetHandleNameIfNeedsToFreeze
+                  argument_list: (
+          name_to_node_map, node.name(), variable_node_names)
+                   (: (
+                   identifier: name_to_node_map
+                   ,: ,
+                   call_expression: node.name()
+                    field_expression: node.name
+                     identifier: node
+                     .: .
+                     field_identifier: name
+                    argument_list: ()
+                     (: (
+                     ): )
+                   ,: ,
+                   identifier: variable_node_names
+                   ): )
+                ;: ;
+               if_statement: if (handle_name.ok()) {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+                if: if
+                condition_clause: (handle_name.ok())
+                 (: (
+                 call_expression: handle_name.ok()
+                  field_expression: handle_name.ok
+                   identifier: handle_name
+                   .: .
+                   field_identifier: ok
+                  argument_list: ()
+                   (: (
+                   ): )
+                 ): )
+                compound_statement: {
+        // Identity node that is forwarding the value of a frozen
+        // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+        NodeDef* new_node = frozen_graph_def->add_node();
+        *new_node = node;
+        (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+        continue;
+      }
+                 {: {
+                 comment: // Identity node that is forwarding the value of a frozen
+                 comment: // VarhandleOp. We ensure that the dtype matches of the variable dtype.
+                 declaration: NodeDef* new_node = frozen_graph_def->add_node();
+                  type_identifier: NodeDef
+                  init_declarator: * new_node = frozen_graph_def->add_node()
+                   pointer_declarator: * new_node
+                    *: *
+                    identifier: new_node
+                   =: =
+                   call_expression: frozen_graph_def->add_node()
+                    field_expression: frozen_graph_def->add_node
+                     identifier: frozen_graph_def
+                     ->: ->
+                     field_identifier: add_node
+                    argument_list: ()
+                     (: (
+                     ): )
+                  ;: ;
+                 expression_statement: *new_node = node;
+                  assignment_expression: *new_node = node
+                   pointer_expression: *new_node
+                    *: *
+                    identifier: new_node
+                   =: =
+                   identifier: node
+                  ;: ;
+                 expression_statement: (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype");
+                  assignment_expression: (*new_node->mutable_attr())["T"] =
+            name_to_node_map.at(*handle_name)->attr().at("dtype")
+                   subscript_expression: (*new_node->mutable_attr())["T"]
+                    parenthesized_expression: (*new_node->mutable_attr())
+                     (: (
+                     pointer_expression: *new_node->mutable_attr()
+                      *: *
+                      call_expression: new_node->mutable_attr()
+                       field_expression: new_node->mutable_attr
+                        identifier: new_node
+                        ->: ->
+                        field_identifier: mutable_attr
+                       argument_list: ()
+                        (: (
+                        ): )
+                     ): )
+                    subscript_argument_list: ["T"]
+                     [: [
+                     string_literal: "T"
+                      ": "
+                      string_content: T
+                      ": "
+                     ]: ]
+                   =: =
+                   call_expression: name_to_node_map.at(*handle_name)->attr().at("dtype")
+                    field_expression: name_to_node_map.at(*handle_name)->attr().at
+                     call_expression: name_to_node_map.at(*handle_name)->attr()
+                      field_expression: name_to_node_map.at(*handle_name)->attr
+                       call_expression: name_to_node_map.at(*handle_name)
+                        field_expression: name_to_node_map.at
+                         identifier: name_to_node_map
+                         .: .
+                         field_identifier: at
+                        argument_list: (*handle_name)
+                         (: (
+                         pointer_expression: *handle_name
+                          *: *
+                          identifier: handle_name
+                         ): )
+                       ->: ->
+                       field_identifier: attr
+                      argument_list: ()
+                       (: (
+                       ): )
+                     .: .
+                     field_identifier: at
+                    argument_list: ("dtype")
+                     (: (
+                     string_literal: "dtype"
+                      ": "
+                      string_content: dtype
+                      ": "
+                     ): )
+                  ;: ;
+                 continue_statement: continue;
+                  continue: continue
+                  ;: ;
+                 }: }
+               }: }
+         comment: // If the node isn't a variable, just copy the node as-is.
+         expression_statement: *frozen_graph_def->add_node() = node;
+          assignment_expression: *frozen_graph_def->add_node() = node
+           pointer_expression: *frozen_graph_def->add_node()
+            *: *
+            call_expression: frozen_graph_def->add_node()
+             field_expression: frozen_graph_def->add_node
+              identifier: frozen_graph_def
+              ->: ->
+              field_identifier: add_node
+             argument_list: ()
+              (: (
+              ): )
+           =: =
+           identifier: node
+          ;: ;
+         }: }
+       return_statement: return absl::OkStatus();
+        return: return
+        call_expression: absl::OkStatus()
+         qualified_identifier: absl::OkStatus
+          namespace_identifier: absl
+          ::: ::
+          identifier: OkStatus
+         argument_list: ()
+          (: (
+          ): )
+        ;: ;
+       }: }
+     }: }
+   comment: // namespace
+   function_definition: absl::Status FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs) {
+  GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+  TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+  return absl::OkStatus();
+}
+    qualified_identifier: absl::Status
+     namespace_identifier: absl
+     ::: ::
+     type_identifier: Status
+    function_declarator: FreezeSavedModel(const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs)
+     identifier: FreezeSavedModel
+     parameter_list: (const SavedModelBundle& saved_model_bundle,
+                              GraphDef* frozen_graph_def,
+                              std::unordered_set<string>* inputs,
+                              std::unordered_set<string>* outputs)
+      (: (
+      parameter_declaration: const SavedModelBundle& saved_model_bundle
+       type_qualifier: const
+        const: const
+       type_identifier: SavedModelBundle
+       reference_declarator: & saved_model_bundle
+        &: &
+        identifier: saved_model_bundle
+      ,: ,
+      parameter_declaration: GraphDef* frozen_graph_def
+       type_identifier: GraphDef
+       pointer_declarator: * frozen_graph_def
+        *: *
+        identifier: frozen_graph_def
+      ,: ,
+      parameter_declaration: std::unordered_set<string>* inputs
+       qualified_identifier: std::unordered_set<string>
+        namespace_identifier: std
+        ::: ::
+        template_type: unordered_set<string>
+         type_identifier: unordered_set
+         template_argument_list: <string>
+          <: <
+          type_descriptor: string
+           type_identifier: string
+          >: >
+       pointer_declarator: * inputs
+        *: *
+        identifier: inputs
+      ,: ,
+      parameter_declaration: std::unordered_set<string>* outputs
+       qualified_identifier: std::unordered_set<string>
+        namespace_identifier: std
+        ::: ::
+        template_type: unordered_set<string>
+         type_identifier: unordered_set
+         template_argument_list: <string>
+          <: <
+          type_descriptor: string
+           type_identifier: string
+          >: >
+       pointer_declarator: * outputs
+        *: *
+        identifier: outputs
+      ): )
+    compound_statement: {
+  GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+  TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+  return absl::OkStatus();
+}
+     {: {
+     expression_statement: GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs);
+      call_expression: GetSignatureDefsInputsAndOutputs(saved_model_bundle, inputs, outputs)
+       identifier: GetSignatureDefsInputsAndOutputs
+       argument_list: (saved_model_bundle, inputs, outputs)
+        (: (
+        identifier: saved_model_bundle
+        ,: ,
+        identifier: inputs
+        ,: ,
+        identifier: outputs
+        ): )
+      ;: ;
+     expression_statement: TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def));
+      call_expression: TF_RETURN_IF_ERROR(
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def))
+       identifier: TF_RETURN_IF_ERROR
+       argument_list: (
+      FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def))
+        (: (
+        call_expression: FreezeGraphDef(saved_model_bundle, *outputs, frozen_graph_def)
+         identifier: FreezeGraphDef
+         argument_list: (saved_model_bundle, *outputs, frozen_graph_def)
+          (: (
+          identifier: saved_model_bundle
+          ,: ,
+          pointer_expression: *outputs
+           *: *
+           identifier: outputs
+          ,: ,
+          identifier: frozen_graph_def
+          ): )
+        ): )
+      ;: ;
+     return_statement: return absl::OkStatus();
+      return: return
+      call_expression: absl::OkStatus()
+       qualified_identifier: absl::OkStatus
+        namespace_identifier: absl
+        ::: ::
+        identifier: OkStatus
+       argument_list: ()
+        (: (
+        ): )
+      ;: ;
+     }: }
+   }: }
+ comment: // namespace tensorflow

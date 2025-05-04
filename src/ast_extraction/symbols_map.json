@@ -24,16 +24,16 @@
     "cpp": {
         "function": {
           "def_keyword": "function_definition",
-          "name_path": ["**", "function_declarator", "identifier"],
+          "name_path": ["function_declarator", "*identifier", "*field_identifier", "*type_identifier", "*qualified_identifier"],
           "args_path": [ "function_declarator","parameter_list", "parameter_declaration"],
           "return_path": ["return_statement", "identifier"],
-          "calls_path": ["**", "call_expression"],
+          "calls_path": ["**", "call_expression", "**", "*field_identifier", "*identifier"],
           "class_deps_path": ["**", "type_identifier"]
         },
         "class": {
           "def_keyword": "class_specifier",
           "name_path": ["type_identifier"],
-          "base_classes_path": ["base_class_clause", "qualified_identifier"],
+          "base_classes_path": ["base_class_clause", "**", "type_identifier"],
           "init_args_path": [],
           "methods_path": ["field_declaration_list", "function_definition"],
           "attributes_path": ["field_declaration_list", "field_declaration"]

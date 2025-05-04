@@ -1,0 +1,1710 @@
+translation_unit: /* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/core/lib/hash/hash.h"
+
+namespace tensorflow {
+
+Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
+
+Output Operation::input(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_inputs());
+  // Handle the case where the input was unknown at the time this
+  // Operation was constructed.
+  if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+  return Output(inputs_[i].first, inputs_[i].second);
+}
+
+Output Operation::output(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_outputs());
+  return Output(node_, i);
+}
+
+uint64 Operation::hash(int32_t index) const {
+  return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+}
+
+Operation::Inputs Operation::GetInputs(Node* node) {
+  Operation::Inputs inputs;
+  if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+  return inputs;
+}
+
+Input::Initializer::Initializer(
+    const std::initializer_list<Input::Initializer>& v) {
+  if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+  auto const& first = *v.begin();
+  // Check to make sure that the constituent Initializers are all the same
+  // type and same shape.
+  for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+
+  // Form the new shape.
+  TensorShape shape{static_cast<int64_t>(v.size())};
+  shape.AppendShape(TensorShape{first.tensor.shape()});
+
+  Tensor t(first.tensor.dtype(), shape);
+
+  // Collate the constituent Tensors.
+  size_t offset = 0;
+  for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+  tensor = t;
+}
+
+}  // namespace tensorflow
+
+ comment: /* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+ preproc_include: #include "tensorflow/cc/framework/ops.h"
+
+  #include: #include
+  string_literal: "tensorflow/cc/framework/ops.h"
+   ": "
+   string_content: tensorflow/cc/framework/ops.h
+   ": "
+ preproc_include: #include "tensorflow/core/lib/hash/hash.h"
+
+  #include: #include
+  string_literal: "tensorflow/core/lib/hash/hash.h"
+   ": "
+   string_content: tensorflow/core/lib/hash/hash.h
+   ": "
+ namespace_definition: namespace tensorflow {
+
+Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
+
+Output Operation::input(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_inputs());
+  // Handle the case where the input was unknown at the time this
+  // Operation was constructed.
+  if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+  return Output(inputs_[i].first, inputs_[i].second);
+}
+
+Output Operation::output(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_outputs());
+  return Output(node_, i);
+}
+
+uint64 Operation::hash(int32_t index) const {
+  return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+}
+
+Operation::Inputs Operation::GetInputs(Node* node) {
+  Operation::Inputs inputs;
+  if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+  return inputs;
+}
+
+Input::Initializer::Initializer(
+    const std::initializer_list<Input::Initializer>& v) {
+  if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+  auto const& first = *v.begin();
+  // Check to make sure that the constituent Initializers are all the same
+  // type and same shape.
+  for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+
+  // Form the new shape.
+  TensorShape shape{static_cast<int64_t>(v.size())};
+  shape.AppendShape(TensorShape{first.tensor.shape()});
+
+  Tensor t(first.tensor.dtype(), shape);
+
+  // Collate the constituent Tensors.
+  size_t offset = 0;
+  for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+  tensor = t;
+}
+
+}
+  namespace: namespace
+  namespace_identifier: tensorflow
+  declaration_list: {
+
+Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
+
+Output Operation::input(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_inputs());
+  // Handle the case where the input was unknown at the time this
+  // Operation was constructed.
+  if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+  return Output(inputs_[i].first, inputs_[i].second);
+}
+
+Output Operation::output(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_outputs());
+  return Output(node_, i);
+}
+
+uint64 Operation::hash(int32_t index) const {
+  return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+}
+
+Operation::Inputs Operation::GetInputs(Node* node) {
+  Operation::Inputs inputs;
+  if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+  return inputs;
+}
+
+Input::Initializer::Initializer(
+    const std::initializer_list<Input::Initializer>& v) {
+  if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+  auto const& first = *v.begin();
+  // Check to make sure that the constituent Initializers are all the same
+  // type and same shape.
+  for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+
+  // Form the new shape.
+  TensorShape shape{static_cast<int64_t>(v.size())};
+  shape.AppendShape(TensorShape{first.tensor.shape()});
+
+  Tensor t(first.tensor.dtype(), shape);
+
+  // Collate the constituent Tensors.
+  size_t offset = 0;
+  for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+  tensor = t;
+}
+
+}
+   {: {
+   function_definition: Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
+    function_declarator: Operation::Operation(Node* n)
+     qualified_identifier: Operation::Operation
+      namespace_identifier: Operation
+      ::: ::
+      identifier: Operation
+     parameter_list: (Node* n)
+      (: (
+      parameter_declaration: Node* n
+       type_identifier: Node
+       pointer_declarator: * n
+        *: *
+        identifier: n
+      ): )
+    field_initializer_list: : inputs_(GetInputs(n)), node_(n)
+     :: :
+     field_initializer: inputs_(GetInputs(n))
+      field_identifier: inputs_
+      argument_list: (GetInputs(n))
+       (: (
+       call_expression: GetInputs(n)
+        identifier: GetInputs
+        argument_list: (n)
+         (: (
+         identifier: n
+         ): )
+       ): )
+     ,: ,
+     field_initializer: node_(n)
+      field_identifier: node_
+      argument_list: (n)
+       (: (
+       identifier: n
+       ): )
+    compound_statement: {}
+     {: {
+     }: }
+   function_definition: Output Operation::input(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_inputs());
+  // Handle the case where the input was unknown at the time this
+  // Operation was constructed.
+  if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+  return Output(inputs_[i].first, inputs_[i].second);
+}
+    type_identifier: Output
+    function_declarator: Operation::input(int32_t i) const
+     qualified_identifier: Operation::input
+      namespace_identifier: Operation
+      ::: ::
+      identifier: input
+     parameter_list: (int32_t i)
+      (: (
+      parameter_declaration: int32_t i
+       primitive_type: int32_t
+       identifier: i
+      ): )
+     type_qualifier: const
+      const: const
+    compound_statement: {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_inputs());
+  // Handle the case where the input was unknown at the time this
+  // Operation was constructed.
+  if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+  return Output(inputs_[i].first, inputs_[i].second);
+}
+     {: {
+     expression_statement: CHECK_NOTNULL(node_);
+      call_expression: CHECK_NOTNULL(node_)
+       identifier: CHECK_NOTNULL
+       argument_list: (node_)
+        (: (
+        identifier: node_
+        ): )
+      ;: ;
+     expression_statement: CHECK_GE(i, 0);
+      call_expression: CHECK_GE(i, 0)
+       identifier: CHECK_GE
+       argument_list: (i, 0)
+        (: (
+        identifier: i
+        ,: ,
+        number_literal: 0
+        ): )
+      ;: ;
+     expression_statement: CHECK_LT(i, node_->num_inputs());
+      call_expression: CHECK_LT(i, node_->num_inputs())
+       identifier: CHECK_LT
+       argument_list: (i, node_->num_inputs())
+        (: (
+        identifier: i
+        ,: ,
+        call_expression: node_->num_inputs()
+         field_expression: node_->num_inputs
+          identifier: node_
+          ->: ->
+          field_identifier: num_inputs
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+      ;: ;
+     comment: // Handle the case where the input was unknown at the time this
+     comment: // Operation was constructed.
+     if_statement: if (inputs_[i].first == nullptr && inputs_[i].second == -1) {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+      if: if
+      condition_clause: (inputs_[i].first == nullptr && inputs_[i].second == -1)
+       (: (
+       binary_expression: inputs_[i].first == nullptr && inputs_[i].second == -1
+        binary_expression: inputs_[i].first == nullptr
+         field_expression: inputs_[i].first
+          subscript_expression: inputs_[i]
+           identifier: inputs_
+           subscript_argument_list: [i]
+            [: [
+            identifier: i
+            ]: ]
+          .: .
+          field_identifier: first
+         ==: ==
+         null: nullptr
+          nullptr: nullptr
+        &&: &&
+        binary_expression: inputs_[i].second == -1
+         field_expression: inputs_[i].second
+          subscript_expression: inputs_[i]
+           identifier: inputs_
+           subscript_argument_list: [i]
+            [: [
+            identifier: i
+            ]: ]
+          .: .
+          field_identifier: second
+         ==: ==
+         number_literal: -1
+       ): )
+      compound_statement: {
+    for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+  }
+       {: {
+       for_range_loop: for (const Edge* e : node_->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+        for: for
+        (: (
+        type_qualifier: const
+         const: const
+        type_identifier: Edge
+        pointer_declarator: * e
+         *: *
+         identifier: e
+        :: :
+        call_expression: node_->in_edges()
+         field_expression: node_->in_edges
+          identifier: node_
+          ->: ->
+          field_identifier: in_edges
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+        compound_statement: {
+      if (e->IsControlEdge()) continue;
+      if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+    }
+         {: {
+         if_statement: if (e->IsControlEdge()) continue;
+          if: if
+          condition_clause: (e->IsControlEdge())
+           (: (
+           call_expression: e->IsControlEdge()
+            field_expression: e->IsControlEdge
+             identifier: e
+             ->: ->
+             field_identifier: IsControlEdge
+            argument_list: ()
+             (: (
+             ): )
+           ): )
+          continue_statement: continue;
+           continue: continue
+           ;: ;
+         if_statement: if (e->dst_input() == i) {
+        return Output(e->src(), e->src_output());
+      }
+          if: if
+          condition_clause: (e->dst_input() == i)
+           (: (
+           binary_expression: e->dst_input() == i
+            call_expression: e->dst_input()
+             field_expression: e->dst_input
+              identifier: e
+              ->: ->
+              field_identifier: dst_input
+             argument_list: ()
+              (: (
+              ): )
+            ==: ==
+            identifier: i
+           ): )
+          compound_statement: {
+        return Output(e->src(), e->src_output());
+      }
+           {: {
+           return_statement: return Output(e->src(), e->src_output());
+            return: return
+            call_expression: Output(e->src(), e->src_output())
+             identifier: Output
+             argument_list: (e->src(), e->src_output())
+              (: (
+              call_expression: e->src()
+               field_expression: e->src
+                identifier: e
+                ->: ->
+                field_identifier: src
+               argument_list: ()
+                (: (
+                ): )
+              ,: ,
+              call_expression: e->src_output()
+               field_expression: e->src_output
+                identifier: e
+                ->: ->
+                field_identifier: src_output
+               argument_list: ()
+                (: (
+                ): )
+              ): )
+            ;: ;
+           }: }
+         }: }
+       }: }
+     return_statement: return Output(inputs_[i].first, inputs_[i].second);
+      return: return
+      call_expression: Output(inputs_[i].first, inputs_[i].second)
+       identifier: Output
+       argument_list: (inputs_[i].first, inputs_[i].second)
+        (: (
+        field_expression: inputs_[i].first
+         subscript_expression: inputs_[i]
+          identifier: inputs_
+          subscript_argument_list: [i]
+           [: [
+           identifier: i
+           ]: ]
+         .: .
+         field_identifier: first
+        ,: ,
+        field_expression: inputs_[i].second
+         subscript_expression: inputs_[i]
+          identifier: inputs_
+          subscript_argument_list: [i]
+           [: [
+           identifier: i
+           ]: ]
+         .: .
+         field_identifier: second
+        ): )
+      ;: ;
+     }: }
+   function_definition: Output Operation::output(int32_t i) const {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_outputs());
+  return Output(node_, i);
+}
+    type_identifier: Output
+    function_declarator: Operation::output(int32_t i) const
+     qualified_identifier: Operation::output
+      namespace_identifier: Operation
+      ::: ::
+      identifier: output
+     parameter_list: (int32_t i)
+      (: (
+      parameter_declaration: int32_t i
+       primitive_type: int32_t
+       identifier: i
+      ): )
+     type_qualifier: const
+      const: const
+    compound_statement: {
+  CHECK_NOTNULL(node_);
+  CHECK_GE(i, 0);
+  CHECK_LT(i, node_->num_outputs());
+  return Output(node_, i);
+}
+     {: {
+     expression_statement: CHECK_NOTNULL(node_);
+      call_expression: CHECK_NOTNULL(node_)
+       identifier: CHECK_NOTNULL
+       argument_list: (node_)
+        (: (
+        identifier: node_
+        ): )
+      ;: ;
+     expression_statement: CHECK_GE(i, 0);
+      call_expression: CHECK_GE(i, 0)
+       identifier: CHECK_GE
+       argument_list: (i, 0)
+        (: (
+        identifier: i
+        ,: ,
+        number_literal: 0
+        ): )
+      ;: ;
+     expression_statement: CHECK_LT(i, node_->num_outputs());
+      call_expression: CHECK_LT(i, node_->num_outputs())
+       identifier: CHECK_LT
+       argument_list: (i, node_->num_outputs())
+        (: (
+        identifier: i
+        ,: ,
+        call_expression: node_->num_outputs()
+         field_expression: node_->num_outputs
+          identifier: node_
+          ->: ->
+          field_identifier: num_outputs
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+      ;: ;
+     return_statement: return Output(node_, i);
+      return: return
+      call_expression: Output(node_, i)
+       identifier: Output
+       argument_list: (node_, i)
+        (: (
+        identifier: node_
+        ,: ,
+        identifier: i
+        ): )
+      ;: ;
+     }: }
+   function_definition: uint64 Operation::hash(int32_t index) const {
+  return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+}
+    type_identifier: uint64
+    function_declarator: Operation::hash(int32_t index) const
+     qualified_identifier: Operation::hash
+      namespace_identifier: Operation
+      ::: ::
+      identifier: hash
+     parameter_list: (int32_t index)
+      (: (
+      parameter_declaration: int32_t index
+       primitive_type: int32_t
+       identifier: index
+      ): )
+     type_qualifier: const
+      const: const
+    compound_statement: {
+  return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+}
+     {: {
+     return_statement: return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index);
+      return: return
+      call_expression: ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index)
+       qualified_identifier: ::tensorflow::Hash64
+        ::: ::
+        qualified_identifier: tensorflow::Hash64
+         namespace_identifier: tensorflow
+         ::: ::
+         identifier: Hash64
+       argument_list: (reinterpret_cast<const char*>(&node_),
+                              sizeof(Node*), index)
+        (: (
+        call_expression: reinterpret_cast<const char*>(&node_)
+         template_function: reinterpret_cast<const char*>
+          identifier: reinterpret_cast
+          template_argument_list: <const char*>
+           <: <
+           type_descriptor: const char*
+            type_qualifier: const
+             const: const
+            primitive_type: char
+            abstract_pointer_declarator: *
+             *: *
+           >: >
+         argument_list: (&node_)
+          (: (
+          pointer_expression: &node_
+           &: &
+           identifier: node_
+          ): )
+        ,: ,
+        sizeof_expression: sizeof(Node*)
+         sizeof: sizeof
+         (: (
+         type_descriptor: Node*
+          type_identifier: Node
+          abstract_pointer_declarator: *
+           *: *
+         ): )
+        ,: ,
+        identifier: index
+        ): )
+      ;: ;
+     }: }
+   function_definition: Operation::Inputs Operation::GetInputs(Node* node) {
+  Operation::Inputs inputs;
+  if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+  return inputs;
+}
+    qualified_identifier: Operation::Inputs
+     namespace_identifier: Operation
+     ::: ::
+     type_identifier: Inputs
+    function_declarator: Operation::GetInputs(Node* node)
+     qualified_identifier: Operation::GetInputs
+      namespace_identifier: Operation
+      ::: ::
+      identifier: GetInputs
+     parameter_list: (Node* node)
+      (: (
+      parameter_declaration: Node* node
+       type_identifier: Node
+       pointer_declarator: * node
+        *: *
+        identifier: node
+      ): )
+    compound_statement: {
+  Operation::Inputs inputs;
+  if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+  return inputs;
+}
+     {: {
+     declaration: Operation::Inputs inputs;
+      qualified_identifier: Operation::Inputs
+       namespace_identifier: Operation
+       ::: ::
+       type_identifier: Inputs
+      identifier: inputs
+      ;: ;
+     if_statement: if (node != nullptr) {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+      if: if
+      condition_clause: (node != nullptr)
+       (: (
+       binary_expression: node != nullptr
+        identifier: node
+        !=: !=
+        null: nullptr
+         nullptr: nullptr
+       ): )
+      compound_statement: {
+    inputs.resize(node->num_inputs(), {nullptr, -1});
+    for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+  }
+       {: {
+       expression_statement: inputs.resize(node->num_inputs(), {nullptr, -1});
+        call_expression: inputs.resize(node->num_inputs(), {nullptr, -1})
+         field_expression: inputs.resize
+          identifier: inputs
+          .: .
+          field_identifier: resize
+         argument_list: (node->num_inputs(), {nullptr, -1})
+          (: (
+          call_expression: node->num_inputs()
+           field_expression: node->num_inputs
+            identifier: node
+            ->: ->
+            field_identifier: num_inputs
+           argument_list: ()
+            (: (
+            ): )
+          ,: ,
+          initializer_list: {nullptr, -1}
+           {: {
+           null: nullptr
+            nullptr: nullptr
+           ,: ,
+           number_literal: -1
+           }: }
+          ): )
+        ;: ;
+       for_range_loop: for (const Edge* e : node->in_edges()) {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+        for: for
+        (: (
+        type_qualifier: const
+         const: const
+        type_identifier: Edge
+        pointer_declarator: * e
+         *: *
+         identifier: e
+        :: :
+        call_expression: node->in_edges()
+         field_expression: node->in_edges
+          identifier: node
+          ->: ->
+          field_identifier: in_edges
+         argument_list: ()
+          (: (
+          ): )
+        ): )
+        compound_statement: {
+      if (e->IsControlEdge()) continue;
+      inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+    }
+         {: {
+         if_statement: if (e->IsControlEdge()) continue;
+          if: if
+          condition_clause: (e->IsControlEdge())
+           (: (
+           call_expression: e->IsControlEdge()
+            field_expression: e->IsControlEdge
+             identifier: e
+             ->: ->
+             field_identifier: IsControlEdge
+            argument_list: ()
+             (: (
+             ): )
+           ): )
+          continue_statement: continue;
+           continue: continue
+           ;: ;
+         expression_statement: inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output());
+          assignment_expression: inputs[e->dst_input()] = std::make_pair(e->src(), e->src_output())
+           subscript_expression: inputs[e->dst_input()]
+            identifier: inputs
+            subscript_argument_list: [e->dst_input()]
+             [: [
+             call_expression: e->dst_input()
+              field_expression: e->dst_input
+               identifier: e
+               ->: ->
+               field_identifier: dst_input
+              argument_list: ()
+               (: (
+               ): )
+             ]: ]
+           =: =
+           call_expression: std::make_pair(e->src(), e->src_output())
+            qualified_identifier: std::make_pair
+             namespace_identifier: std
+             ::: ::
+             identifier: make_pair
+            argument_list: (e->src(), e->src_output())
+             (: (
+             call_expression: e->src()
+              field_expression: e->src
+               identifier: e
+               ->: ->
+               field_identifier: src
+              argument_list: ()
+               (: (
+               ): )
+             ,: ,
+             call_expression: e->src_output()
+              field_expression: e->src_output
+               identifier: e
+               ->: ->
+               field_identifier: src_output
+              argument_list: ()
+               (: (
+               ): )
+             ): )
+          ;: ;
+         }: }
+       }: }
+     return_statement: return inputs;
+      return: return
+      identifier: inputs
+      ;: ;
+     }: }
+   function_definition: Input::Initializer::Initializer(
+    const std::initializer_list<Input::Initializer>& v) {
+  if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+  auto const& first = *v.begin();
+  // Check to make sure that the constituent Initializers are all the same
+  // type and same shape.
+  for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+
+  // Form the new shape.
+  TensorShape shape{static_cast<int64_t>(v.size())};
+  shape.AppendShape(TensorShape{first.tensor.shape()});
+
+  Tensor t(first.tensor.dtype(), shape);
+
+  // Collate the constituent Tensors.
+  size_t offset = 0;
+  for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+  tensor = t;
+}
+    function_declarator: Input::Initializer::Initializer(
+    const std::initializer_list<Input::Initializer>& v)
+     qualified_identifier: Input::Initializer::Initializer
+      namespace_identifier: Input
+      ::: ::
+      qualified_identifier: Initializer::Initializer
+       namespace_identifier: Initializer
+       ::: ::
+       identifier: Initializer
+     parameter_list: (
+    const std::initializer_list<Input::Initializer>& v)
+      (: (
+      parameter_declaration: const std::initializer_list<Input::Initializer>& v
+       type_qualifier: const
+        const: const
+       qualified_identifier: std::initializer_list<Input::Initializer>
+        namespace_identifier: std
+        ::: ::
+        template_type: initializer_list<Input::Initializer>
+         type_identifier: initializer_list
+         template_argument_list: <Input::Initializer>
+          <: <
+          type_descriptor: Input::Initializer
+           qualified_identifier: Input::Initializer
+            namespace_identifier: Input
+            ::: ::
+            type_identifier: Initializer
+          >: >
+       reference_declarator: & v
+        &: &
+        identifier: v
+      ): )
+    compound_statement: {
+  if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+  auto const& first = *v.begin();
+  // Check to make sure that the constituent Initializers are all the same
+  // type and same shape.
+  for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+
+  // Form the new shape.
+  TensorShape shape{static_cast<int64_t>(v.size())};
+  shape.AppendShape(TensorShape{first.tensor.shape()});
+
+  Tensor t(first.tensor.dtype(), shape);
+
+  // Collate the constituent Tensors.
+  size_t offset = 0;
+  for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+  tensor = t;
+}
+     {: {
+     if_statement: if (v.size() < 1) {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+      if: if
+      condition_clause: (v.size() < 1)
+       (: (
+       binary_expression: v.size() < 1
+        call_expression: v.size()
+         field_expression: v.size
+          identifier: v
+          .: .
+          field_identifier: size
+         argument_list: ()
+          (: (
+          ): )
+        <: <
+        number_literal: 1
+       ): )
+      compound_statement: {
+    // Empty initializer list defaults to float tensor with shape (0,)
+    tensor = Tensor(DT_FLOAT, TensorShape{0});
+    return;
+  }
+       {: {
+       comment: // Empty initializer list defaults to float tensor with shape (0,)
+       expression_statement: tensor = Tensor(DT_FLOAT, TensorShape{0});
+        assignment_expression: tensor = Tensor(DT_FLOAT, TensorShape{0})
+         identifier: tensor
+         =: =
+         call_expression: Tensor(DT_FLOAT, TensorShape{0})
+          identifier: Tensor
+          argument_list: (DT_FLOAT, TensorShape{0})
+           (: (
+           identifier: DT_FLOAT
+           ,: ,
+           compound_literal_expression: TensorShape{0}
+            type_identifier: TensorShape
+            initializer_list: {0}
+             {: {
+             number_literal: 0
+             }: }
+           ): )
+        ;: ;
+       return_statement: return;
+        return: return
+        ;: ;
+       }: }
+     declaration: auto const& first = *v.begin();
+      placeholder_type_specifier: auto
+       auto: auto
+      type_qualifier: const
+       const: const
+      init_declarator: & first = *v.begin()
+       reference_declarator: & first
+        &: &
+        identifier: first
+       =: =
+       pointer_expression: *v.begin()
+        *: *
+        call_expression: v.begin()
+         field_expression: v.begin
+          identifier: v
+          .: .
+          field_identifier: begin
+         argument_list: ()
+          (: (
+          ): )
+      ;: ;
+     comment: // Check to make sure that the constituent Initializers are all the same
+     comment: // type and same shape.
+     for_range_loop: for (auto const& e : v) {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+      for: for
+      (: (
+      placeholder_type_specifier: auto
+       auto: auto
+      type_qualifier: const
+       const: const
+      reference_declarator: & e
+       &: &
+       identifier: e
+      :: :
+      identifier: v
+      ): )
+      compound_statement: {
+    if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+    if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+  }
+       {: {
+       if_statement: if (e.tensor.dtype() != first.tensor.dtype()) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+        if: if
+        condition_clause: (e.tensor.dtype() != first.tensor.dtype())
+         (: (
+         binary_expression: e.tensor.dtype() != first.tensor.dtype()
+          call_expression: e.tensor.dtype()
+           field_expression: e.tensor.dtype
+            field_expression: e.tensor
+             identifier: e
+             .: .
+             field_identifier: tensor
+            .: .
+            field_identifier: dtype
+           argument_list: ()
+            (: (
+            ): )
+          !=: !=
+          call_expression: first.tensor.dtype()
+           field_expression: first.tensor.dtype
+            field_expression: first.tensor
+             identifier: first
+             .: .
+             field_identifier: tensor
+            .: .
+            field_identifier: dtype
+           argument_list: ()
+            (: (
+            ): )
+         ): )
+        compound_statement: {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+      return;
+    }
+         {: {
+         expression_statement: status = errors::InvalidArgument(
+          "Initializer list components should all have the same type");
+          assignment_expression: status = errors::InvalidArgument(
+          "Initializer list components should all have the same type")
+           identifier: status
+           =: =
+           call_expression: errors::InvalidArgument(
+          "Initializer list components should all have the same type")
+            qualified_identifier: errors::InvalidArgument
+             namespace_identifier: errors
+             ::: ::
+             identifier: InvalidArgument
+            argument_list: (
+          "Initializer list components should all have the same type")
+             (: (
+             string_literal: "Initializer list components should all have the same type"
+              ": "
+              string_content: Initializer list components should all have the same type
+              ": "
+             ): )
+          ;: ;
+         return_statement: return;
+          return: return
+          ;: ;
+         }: }
+       if_statement: if (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})) {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+        if: if
+        condition_clause: (!TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()}))
+         (: (
+         unary_expression: !TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})
+          !: !
+          call_expression: TensorShape{e.tensor.shape()}.IsSameSize(
+            TensorShape{first.tensor.shape()})
+           field_expression: TensorShape{e.tensor.shape()}.IsSameSize
+            compound_literal_expression: TensorShape{e.tensor.shape()}
+             type_identifier: TensorShape
+             initializer_list: {e.tensor.shape()}
+              {: {
+              call_expression: e.tensor.shape()
+               field_expression: e.tensor.shape
+                field_expression: e.tensor
+                 identifier: e
+                 .: .
+                 field_identifier: tensor
+                .: .
+                field_identifier: shape
+               argument_list: ()
+                (: (
+                ): )
+              }: }
+            .: .
+            field_identifier: IsSameSize
+           argument_list: (
+            TensorShape{first.tensor.shape()})
+            (: (
+            compound_literal_expression: TensorShape{first.tensor.shape()}
+             type_identifier: TensorShape
+             initializer_list: {first.tensor.shape()}
+              {: {
+              call_expression: first.tensor.shape()
+               field_expression: first.tensor.shape
+                field_expression: first.tensor
+                 identifier: first
+                 .: .
+                 field_identifier: tensor
+                .: .
+                field_identifier: shape
+               argument_list: ()
+                (: (
+                ): )
+              }: }
+            ): )
+         ): )
+        compound_statement: {
+      status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+      return;
+    }
+         {: {
+         expression_statement: status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape");
+          assignment_expression: status = errors::InvalidArgument(
+          "Initializer list components should all have the same shape")
+           identifier: status
+           =: =
+           call_expression: errors::InvalidArgument(
+          "Initializer list components should all have the same shape")
+            qualified_identifier: errors::InvalidArgument
+             namespace_identifier: errors
+             ::: ::
+             identifier: InvalidArgument
+            argument_list: (
+          "Initializer list components should all have the same shape")
+             (: (
+             string_literal: "Initializer list components should all have the same shape"
+              ": "
+              string_content: Initializer list components should all have the same shape
+              ": "
+             ): )
+          ;: ;
+         return_statement: return;
+          return: return
+          ;: ;
+         }: }
+       }: }
+     comment: // Form the new shape.
+     declaration: TensorShape shape{static_cast<int64_t>(v.size())};
+      type_identifier: TensorShape
+      init_declarator: shape{static_cast<int64_t>(v.size())}
+       identifier: shape
+       initializer_list: {static_cast<int64_t>(v.size())}
+        {: {
+        call_expression: static_cast<int64_t>(v.size())
+         template_function: static_cast<int64_t>
+          identifier: static_cast
+          template_argument_list: <int64_t>
+           <: <
+           type_descriptor: int64_t
+            primitive_type: int64_t
+           >: >
+         argument_list: (v.size())
+          (: (
+          call_expression: v.size()
+           field_expression: v.size
+            identifier: v
+            .: .
+            field_identifier: size
+           argument_list: ()
+            (: (
+            ): )
+          ): )
+        }: }
+      ;: ;
+     expression_statement: shape.AppendShape(TensorShape{first.tensor.shape()});
+      call_expression: shape.AppendShape(TensorShape{first.tensor.shape()})
+       field_expression: shape.AppendShape
+        identifier: shape
+        .: .
+        field_identifier: AppendShape
+       argument_list: (TensorShape{first.tensor.shape()})
+        (: (
+        compound_literal_expression: TensorShape{first.tensor.shape()}
+         type_identifier: TensorShape
+         initializer_list: {first.tensor.shape()}
+          {: {
+          call_expression: first.tensor.shape()
+           field_expression: first.tensor.shape
+            field_expression: first.tensor
+             identifier: first
+             .: .
+             field_identifier: tensor
+            .: .
+            field_identifier: shape
+           argument_list: ()
+            (: (
+            ): )
+          }: }
+        ): )
+      ;: ;
+     declaration: Tensor t(first.tensor.dtype(), shape);
+      type_identifier: Tensor
+      init_declarator: t(first.tensor.dtype(), shape)
+       identifier: t
+       argument_list: (first.tensor.dtype(), shape)
+        (: (
+        call_expression: first.tensor.dtype()
+         field_expression: first.tensor.dtype
+          field_expression: first.tensor
+           identifier: first
+           .: .
+           field_identifier: tensor
+          .: .
+          field_identifier: dtype
+         argument_list: ()
+          (: (
+          ): )
+        ,: ,
+        identifier: shape
+        ): )
+      ;: ;
+     comment: // Collate the constituent Tensors.
+     declaration: size_t offset = 0;
+      primitive_type: size_t
+      init_declarator: offset = 0
+       identifier: offset
+       =: =
+       number_literal: 0
+      ;: ;
+     for_range_loop: for (auto const& e : v) {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+      for: for
+      (: (
+      placeholder_type_specifier: auto
+       auto: auto
+      type_qualifier: const
+       const: const
+      reference_declarator: & e
+       &: &
+       identifier: e
+      :: :
+      identifier: v
+      ): )
+      compound_statement: {
+    Tensor elem = e.tensor;
+    if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+  }
+       {: {
+       declaration: Tensor elem = e.tensor;
+        type_identifier: Tensor
+        init_declarator: elem = e.tensor
+         identifier: elem
+         =: =
+         field_expression: e.tensor
+          identifier: e
+          .: .
+          field_identifier: tensor
+        ;: ;
+       if_statement: if (first.tensor.dtype() == DT_STRING) {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    } else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+        if: if
+        condition_clause: (first.tensor.dtype() == DT_STRING)
+         (: (
+         binary_expression: first.tensor.dtype() == DT_STRING
+          call_expression: first.tensor.dtype()
+           field_expression: first.tensor.dtype
+            field_expression: first.tensor
+             identifier: first
+             .: .
+             field_identifier: tensor
+            .: .
+            field_identifier: dtype
+           argument_list: ()
+            (: (
+            ): )
+          ==: ==
+          identifier: DT_STRING
+         ): )
+        compound_statement: {
+      for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+      offset += elem.NumElements();
+    }
+         {: {
+         for_statement: for (int i = 0; i < elem.NumElements(); ++i) {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+          for: for
+          (: (
+          declaration: int i = 0;
+           primitive_type: int
+           init_declarator: i = 0
+            identifier: i
+            =: =
+            number_literal: 0
+           ;: ;
+          binary_expression: i < elem.NumElements()
+           identifier: i
+           <: <
+           call_expression: elem.NumElements()
+            field_expression: elem.NumElements
+             identifier: elem
+             .: .
+             field_identifier: NumElements
+            argument_list: ()
+             (: (
+             ): )
+          ;: ;
+          update_expression: ++i
+           ++: ++
+           identifier: i
+          ): )
+          compound_statement: {
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+      }
+           {: {
+           expression_statement: t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
+            assignment_expression: t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i)
+             call_expression: t.flat<tstring>()(offset + i)
+              call_expression: t.flat<tstring>()
+               field_expression: t.flat<tstring>
+                identifier: t
+                .: .
+                template_method: flat<tstring>
+                 field_identifier: flat
+                 template_argument_list: <tstring>
+                  <: <
+                  type_descriptor: tstring
+                   type_identifier: tstring
+                  >: >
+               argument_list: ()
+                (: (
+                ): )
+              argument_list: (offset + i)
+               (: (
+               binary_expression: offset + i
+                identifier: offset
+                +: +
+                identifier: i
+               ): )
+             =: =
+             call_expression: elem.flat<tstring>()(i)
+              call_expression: elem.flat<tstring>()
+               field_expression: elem.flat<tstring>
+                identifier: elem
+                .: .
+                template_method: flat<tstring>
+                 field_identifier: flat
+                 template_argument_list: <tstring>
+                  <: <
+                  type_descriptor: tstring
+                   type_identifier: tstring
+                  >: >
+               argument_list: ()
+                (: (
+                ): )
+              argument_list: (i)
+               (: (
+               identifier: i
+               ): )
+            ;: ;
+           }: }
+         expression_statement: offset += elem.NumElements();
+          assignment_expression: offset += elem.NumElements()
+           identifier: offset
+           +=: +=
+           call_expression: elem.NumElements()
+            field_expression: elem.NumElements
+             identifier: elem
+             .: .
+             field_identifier: NumElements
+            argument_list: ()
+             (: (
+             ): )
+          ;: ;
+         }: }
+        else_clause: else {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+         else: else
+         compound_statement: {
+      std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+      offset += elem.TotalBytes();
+    }
+          {: {
+          expression_statement: std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset);
+           call_expression: std::copy_n(elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset)
+            qualified_identifier: std::copy_n
+             namespace_identifier: std
+             ::: ::
+             identifier: copy_n
+            argument_list: (elem.tensor_data().data(), elem.TotalBytes(),
+                  const_cast<char*>(t.tensor_data().data()) + offset)
+             (: (
+             call_expression: elem.tensor_data().data()
+              field_expression: elem.tensor_data().data
+               call_expression: elem.tensor_data()
+                field_expression: elem.tensor_data
+                 identifier: elem
+                 .: .
+                 field_identifier: tensor_data
+                argument_list: ()
+                 (: (
+                 ): )
+               .: .
+               field_identifier: data
+              argument_list: ()
+               (: (
+               ): )
+             ,: ,
+             call_expression: elem.TotalBytes()
+              field_expression: elem.TotalBytes
+               identifier: elem
+               .: .
+               field_identifier: TotalBytes
+              argument_list: ()
+               (: (
+               ): )
+             ,: ,
+             binary_expression: const_cast<char*>(t.tensor_data().data()) + offset
+              call_expression: const_cast<char*>(t.tensor_data().data())
+               template_function: const_cast<char*>
+                identifier: const_cast
+                template_argument_list: <char*>
+                 <: <
+                 type_descriptor: char*
+                  primitive_type: char
+                  abstract_pointer_declarator: *
+                   *: *
+                 >: >
+               argument_list: (t.tensor_data().data())
+                (: (
+                call_expression: t.tensor_data().data()
+                 field_expression: t.tensor_data().data
+                  call_expression: t.tensor_data()
+                   field_expression: t.tensor_data
+                    identifier: t
+                    .: .
+                    field_identifier: tensor_data
+                   argument_list: ()
+                    (: (
+                    ): )
+                  .: .
+                  field_identifier: data
+                 argument_list: ()
+                  (: (
+                  ): )
+                ): )
+              +: +
+              identifier: offset
+             ): )
+           ;: ;
+          expression_statement: offset += elem.TotalBytes();
+           assignment_expression: offset += elem.TotalBytes()
+            identifier: offset
+            +=: +=
+            call_expression: elem.TotalBytes()
+             field_expression: elem.TotalBytes
+              identifier: elem
+              .: .
+              field_identifier: TotalBytes
+             argument_list: ()
+              (: (
+              ): )
+           ;: ;
+          }: }
+       }: }
+     expression_statement: tensor = t;
+      assignment_expression: tensor = t
+       identifier: tensor
+       =: =
+       identifier: t
+      ;: ;
+     }: }
+   }: }
+ comment: // namespace tensorflow
