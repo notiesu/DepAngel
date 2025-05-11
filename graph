@@ -1,171 +1,262 @@
 digraph {
-	"LoaderTest.MakeSerializedExample"
-	feature_map -> "LoaderTest.MakeSerializedExample"
-	mutable_features -> "LoaderTest.MakeSerializedExample"
-	SerializeAsString -> "LoaderTest.MakeSerializedExample"
-	mutable_float_list -> "LoaderTest.MakeSerializedExample"
-	add_value -> "LoaderTest.MakeSerializedExample"
-	x -> "LoaderTest.MakeSerializedExample"
-	mutable_feature -> "LoaderTest.MakeSerializedExample"
-	example -> "LoaderTest.MakeSerializedExample"
-	feature_map
-	mutable_features
-	SerializeAsString
-	mutable_float_list
-	add_value
-	x
-	mutable_feature
-	example
-	"LoaderTest.ValidateAssets"
-	FileExists -> "LoaderTest.ValidateAssets"
-	asset_filepath -> "LoaderTest.ValidateAssets"
-	session -> "LoaderTest.ValidateAssets"
-	kSavedModelAssetsDirectory -> "LoaderTest.ValidateAssets"
-	TensorShape -> "LoaderTest.ValidateAssets"
-	Run -> "LoaderTest.ValidateAssets"
-	AsTensor -> "LoaderTest.ValidateAssets"
-	path_outputs -> "LoaderTest.ValidateAssets"
-	asset_filename -> "LoaderTest.ValidateAssets"
-	JoinPath -> "LoaderTest.ValidateAssets"
-	Default -> "LoaderTest.ValidateAssets"
-	export_dir -> "LoaderTest.ValidateAssets"
-	ExpectTensorEqual -> "LoaderTest.ValidateAssets"
-	bundle -> "LoaderTest.ValidateAssets"
-	size -> "LoaderTest.ValidateAssets"
-	asset_directory -> "LoaderTest.ValidateAssets"
-	FileExists
-	asset_filepath
-	kSavedModelAssetsDirectory
-	session
-	TensorShape
-	Run
-	AsTensor
-	path_outputs
-	asset_filename
-	JoinPath
-	Default
-	export_dir
-	ExpectTensorEqual
-	bundle
+	EinsumGetAxisFromLabel
+	kEllipsis -> EinsumGetAxisFromLabel
+	find -> EinsumGetAxisFromLabel
+	splits -> EinsumGetAxisFromLabel
+	subscripts -> EinsumGetAxisFromLabel
+	size -> EinsumGetAxisFromLabel
+	length -> EinsumGetAxisFromLabel
+	StrSplit -> EinsumGetAxisFromLabel
+	label -> EinsumGetAxisFromLabel
+	kEllipsis
+	find
+	splits
+	label
+	subscripts
 	size
-	asset_directory
-	"LoaderTest.CheckSavedModelBundle"
-	push_back -> "LoaderTest.CheckSavedModelBundle"
-	name -> "LoaderTest.CheckSavedModelBundle"
-	at -> "LoaderTest.CheckSavedModelBundle"
-	serialized_examples -> "LoaderTest.CheckSavedModelBundle"
-	x -> "LoaderTest.CheckSavedModelBundle"
-	input_name -> "LoaderTest.CheckSavedModelBundle"
-	kRegressInputs -> "LoaderTest.CheckSavedModelBundle"
-	TensorShape -> "LoaderTest.CheckSavedModelBundle"
-	export_dir -> "LoaderTest.CheckSavedModelBundle"
-	outputs -> "LoaderTest.CheckSavedModelBundle"
-	Run -> "LoaderTest.CheckSavedModelBundle"
-	AsTensor -> "LoaderTest.CheckSavedModelBundle"
-	ExpectTensorEqual -> "LoaderTest.CheckSavedModelBundle"
-	input -> "LoaderTest.CheckSavedModelBundle"
-	GetSignatures -> "LoaderTest.CheckSavedModelBundle"
-	output_name -> "LoaderTest.CheckSavedModelBundle"
-	session -> "LoaderTest.CheckSavedModelBundle"
-	signature_def -> "LoaderTest.CheckSavedModelBundle"
-	kRegressOutputs -> "LoaderTest.CheckSavedModelBundle"
-	inputs -> "LoaderTest.CheckSavedModelBundle"
-	bundle -> "LoaderTest.CheckSavedModelBundle"
-	MakeSerializedExample -> "LoaderTest.CheckSavedModelBundle"
-	size -> "LoaderTest.CheckSavedModelBundle"
-	at
-	name
-	serialized_examples
+	length
+	StrSplit
+	EinsumGetBcastSubshape
+	find -> EinsumGetBcastSubshape
+	kEllipsis -> EinsumGetBcastSubshape
+	end -> EinsumGetBcastSubshape
+	subscripts -> EinsumGetBcastSubshape
+	start -> EinsumGetBcastSubshape
+	length -> EinsumGetBcastSubshape
+	make_tuple -> EinsumGetBcastSubshape
+	end
+	start
+	make_tuple
+	Slice1dHelper
+	scope -> Slice1dHelper
+	end -> Slice1dHelper
+	tensor -> Slice1dHelper
+	TensorShape -> Slice1dHelper
+	start -> Slice1dHelper
+	Const -> Slice1dHelper
+	Add -> Slice1dHelper
+	value_or -> Slice1dHelper
+	has_value -> Slice1dHelper
+	Shape -> Slice1dHelper
+	scope
+	value_or
+	TensorShape
+	Const
+	Add
+	tensor
+	has_value
+	Shape
+	EinsumGetReducedSubscripts
+	reduced_axes -> EinsumGetReducedSubscripts
+	scope -> EinsumGetReducedSubscripts
+	Gather -> EinsumGetReducedSubscripts
+	subscripts -> EinsumGetReducedSubscripts
+	make_tuple -> EinsumGetReducedSubscripts
+	s -> EinsumGetReducedSubscripts
+	reserve -> EinsumGetReducedSubscripts
+	reduced_dims -> EinsumGetReducedSubscripts
+	Add -> EinsumGetReducedSubscripts
+	copy_n -> EinsumGetReducedSubscripts
+	reduced_label_set -> EinsumGetReducedSubscripts
+	StrCat -> EinsumGetReducedSubscripts
+	input_shape -> EinsumGetReducedSubscripts
+	has_value -> EinsumGetReducedSubscripts
+	begin -> EinsumGetReducedSubscripts
+	Internal -> EinsumGetReducedSubscripts
+	UpdateStatus -> EinsumGetReducedSubscripts
+	reduced_subs -> EinsumGetReducedSubscripts
+	axis -> EinsumGetReducedSubscripts
+	i -> EinsumGetReducedSubscripts
+	end -> EinsumGetReducedSubscripts
+	reduced_dims_inputs -> EinsumGetReducedSubscripts
+	Size -> EinsumGetReducedSubscripts
+	string_view -> EinsumGetReducedSubscripts
+	size -> EinsumGetReducedSubscripts
+	reduced_axes_tensor -> EinsumGetReducedSubscripts
+	Const -> EinsumGetReducedSubscripts
+	push_back -> EinsumGetReducedSubscripts
+	flat -> EinsumGetReducedSubscripts
+	data -> EinsumGetReducedSubscripts
+	string -> EinsumGetReducedSubscripts
+	static_cast -> EinsumGetReducedSubscripts
+	reduced_axes
+	Gather
+	s
+	reserve
+	reduced_dims
+	copy_n
+	StrCat
+	reduced_label_set
+	input_shape
+	begin
+	Internal
+	UpdateStatus
+	static_cast
+	reduced_subs
+	axis
+	reduced_dims_inputs
+	Size
+	string_view
+	reduced_axes_tensor
 	push_back
-	input_name
-	kRegressInputs
-	outputs
+	flat
+	data
+	string
+	i
+	EinsumGradReducedHelper
+	reduced_axes -> EinsumGradReducedHelper
+	scope -> EinsumGradReducedHelper
+	input_subs -> EinsumGradReducedHelper
+	flat_hash_set -> EinsumGradReducedHelper
+	output_subs -> EinsumGradReducedHelper
+	Reshape -> EinsumGradReducedHelper
+	s -> EinsumGradReducedHelper
+	reduced_dims -> EinsumGradReducedHelper
+	StrCat -> EinsumGradReducedHelper
+	reduced_label_set -> EinsumGradReducedHelper
+	output_grad -> EinsumGradReducedHelper
+	input_shape -> EinsumGradReducedHelper
+	reduced_shape -> EinsumGradReducedHelper
+	begin -> EinsumGradReducedHelper
+	tie -> EinsumGradReducedHelper
+	reduced_subs -> EinsumGradReducedHelper
+	grad_shape_with_reduced_labels -> EinsumGradReducedHelper
+	end -> EinsumGradReducedHelper
+	broadcasted_grad -> EinsumGradReducedHelper
+	size -> EinsumGradReducedHelper
+	length -> EinsumGradReducedHelper
+	input_subs_without_reduced_labels -> EinsumGradReducedHelper
+	Const -> EinsumGradReducedHelper
+	push_back -> EinsumGradReducedHelper
+	c_linear_search -> EinsumGradReducedHelper
+	output_grad_shape -> EinsumGradReducedHelper
+	static_cast -> EinsumGradReducedHelper
+	input_subs
+	flat_hash_set
+	output_subs
+	Reshape
+	output_grad
+	reduced_shape
+	tie
+	grad_shape_with_reduced_labels
+	broadcasted_grad
+	input_subs_without_reduced_labels
+	c_linear_search
+	output_grad_shape
+	EinsumGradWrt
+	scope -> EinsumGradWrt
+	other_operand -> EinsumGradWrt
+	input_subs -> EinsumGradWrt
+	contains -> EinsumGradWrt
+	output_subs -> EinsumGradWrt
+	s -> EinsumGradWrt
+	x -> EinsumGradWrt
+	reduced_label_set -> EinsumGradWrt
+	StrCat -> EinsumGradWrt
+	output_grad -> EinsumGradWrt
+	input_shape -> EinsumGradWrt
+	begin -> EinsumGradWrt
+	left_subs -> EinsumGradWrt
+	grad_reduced -> EinsumGradWrt
+	empty -> EinsumGradWrt
+	end -> EinsumGradWrt
+	erase -> EinsumGradWrt
+	push_back -> EinsumGradWrt
+	other_subs -> EinsumGradWrt
+	other_operand
+	contains
+	x
+	grad_reduced
+	left_subs
+	empty
+	erase
+	other_subs
+	EinsumGrad
+	StrAppend -> EinsumGrad
+	equation -> EinsumGrad
+	scope -> EinsumGrad
+	grad -> EinsumGrad
+	x_shape -> EinsumGrad
+	num_inputs -> EinsumGrad
+	bx_end -> EinsumGrad
+	input_subs -> EinsumGrad
+	BroadcastGradientArgs -> EinsumGrad
+	bx_start -> EinsumGrad
+	subs -> EinsumGrad
+	y_subs -> EinsumGrad
+	kEllipsis -> EinsumGrad
+	output_subs -> EinsumGrad
+	r0 -> EinsumGrad
+	x -> EinsumGrad
+	InvalidArgument -> EinsumGrad
+	args -> EinsumGrad
+	input -> EinsumGrad
+	Add -> EinsumGrad
+	"node" -> EinsumGrad
+	by_start -> EinsumGrad
+	reduced_label_set -> EinsumGrad
+	StrCat -> EinsumGrad
+	input_shape -> EinsumGrad
+	equation_split -> EinsumGrad
+	begin -> EinsumGrad
+	by_end -> EinsumGrad
+	ReduceSum -> EinsumGrad
+	grad_x -> EinsumGrad
+	y -> EinsumGrad
+	tie -> EinsumGrad
+	grad_y -> EinsumGrad
+	status -> EinsumGrad
+	op -> EinsumGrad
+	EinsumGradReducedHelper -> EinsumGrad
+	empty -> EinsumGrad
+	Slice1dHelper -> EinsumGrad
+	end -> EinsumGrad
+	StrContains -> EinsumGrad
+	erase -> EinsumGrad
+	y_shape -> EinsumGrad
+	size -> EinsumGrad
+	grad_outputs -> EinsumGrad
+	grad_inputs -> EinsumGrad
+	GetNodeAttr -> EinsumGrad
+	Einsum -> EinsumGrad
+	push_back -> EinsumGrad
+	type -> EinsumGrad
+	x_subs -> EinsumGrad
+	r1 -> EinsumGrad
+	StrSplit -> EinsumGrad
+	attrs -> EinsumGrad
+	StrAppend
+	equation
+	grad
+	x_shape
+	num_inputs
+	bx_end
+	r1
+	BroadcastGradientArgs
+	subs
+	bx_start
+	y_subs
+	r0
+	InvalidArgument
+	args
 	input
-	GetSignatures
-	output_name
-	signature_def
-	kRegressOutputs
-	inputs
-	MakeSerializedExample
-	feature_map -> MakeSerializedExample
-	mutable_features -> MakeSerializedExample
-	SerializeAsString -> MakeSerializedExample
-	mutable_float_list -> MakeSerializedExample
-	add_value -> MakeSerializedExample
-	x -> MakeSerializedExample
-	mutable_feature -> MakeSerializedExample
-	example -> MakeSerializedExample
-	ValidateAssets
-	FileExists -> ValidateAssets
-	asset_filepath -> ValidateAssets
-	session -> ValidateAssets
-	kSavedModelAssetsDirectory -> ValidateAssets
-	TensorShape -> ValidateAssets
-	Run -> ValidateAssets
-	AsTensor -> ValidateAssets
-	path_outputs -> ValidateAssets
-	asset_filename -> ValidateAssets
-	JoinPath -> ValidateAssets
-	Default -> ValidateAssets
-	export_dir -> ValidateAssets
-	ExpectTensorEqual -> ValidateAssets
-	bundle -> ValidateAssets
-	size -> ValidateAssets
-	asset_directory -> ValidateAssets
-	CheckSavedModelBundle
-	push_back -> CheckSavedModelBundle
-	name -> CheckSavedModelBundle
-	at -> CheckSavedModelBundle
-	serialized_examples -> CheckSavedModelBundle
-	x -> CheckSavedModelBundle
-	input_name -> CheckSavedModelBundle
-	kRegressInputs -> CheckSavedModelBundle
-	TensorShape -> CheckSavedModelBundle
-	export_dir -> CheckSavedModelBundle
-	outputs -> CheckSavedModelBundle
-	Run -> CheckSavedModelBundle
-	AsTensor -> CheckSavedModelBundle
-	ExpectTensorEqual -> CheckSavedModelBundle
-	input -> CheckSavedModelBundle
-	GetSignatures -> CheckSavedModelBundle
-	output_name -> CheckSavedModelBundle
-	session -> CheckSavedModelBundle
-	signature_def -> CheckSavedModelBundle
-	kRegressOutputs -> CheckSavedModelBundle
-	inputs -> CheckSavedModelBundle
-	bundle -> CheckSavedModelBundle
-	MakeSerializedExample -> CheckSavedModelBundle
-	size -> CheckSavedModelBundle
-	TEST_F
-	value -> TEST_F
-	session_options -> TEST_F
-	SavedModelReadFingerprint -> TEST_F
-	LoadSavedModel -> TEST_F
-	run_options -> TEST_F
-	JoinPath -> TEST_F
-	kSavedModelTagServe -> TEST_F
-	kVarsAndArithmeticObjectGraph -> TEST_F
-	export_dir -> TEST_F
-	SavedModelReadPath -> TEST_F
-	kV2ModuleSavedModelChecksum -> TEST_F
-	bundle -> TEST_F
-	TensorFlowSrcRoot -> TEST_F
-	value
-	session_options
-	SavedModelReadFingerprint
-	LoadSavedModel
-	run_options
-	kSavedModelTagServe
-	kVarsAndArithmeticObjectGraph
-	SavedModelReadPath
-	kV2ModuleSavedModelChecksum
-	TensorFlowSrcRoot
-	LoaderTest
-	"LoaderTest.CheckSavedModelBundle" -> LoaderTest
-	"LoaderTest.ValidateAssets" -> LoaderTest
-	Test -> LoaderTest
-	"LoaderTest.LoaderTest" -> LoaderTest
-	"LoaderTest.MakeSerializedExample" -> LoaderTest
-	Test
-	"LoaderTest.LoaderTest"
+	"node"
+	by_start
+	by_end
+	ReduceSum
+	grad_x
+	y
+	grad_y
+	status
+	op
+	StrContains
+	y_shape
+	grad_outputs
+	grad_inputs
+	GetNodeAttr
+	Einsum
+	type
+	x_subs
+	equation_split
+	attrs
 }

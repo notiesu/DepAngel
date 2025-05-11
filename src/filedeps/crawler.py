@@ -13,6 +13,12 @@ class Crawler:
         self.directory_tree = trees.DirFileTree(root_directory)
         #bucket the source set by extension
         self.source_dict: dict[str, set] = {}
+
+    def normalize_source_paths(self):
+        # Normalize the paths in the source_dict to be relative to the root directory
+        for ext, paths in self.source_dict.items():
+            normalized_paths = {os.path.relpath(path, self.root_directory) for path in paths}
+            self.source_dict[ext] = normalized_paths
     
     def _build_tree_recursively(self, current_path, current_node):
         for entry in os.listdir(current_path):

@@ -2,6 +2,8 @@ import os
 import json
 import time
 
+from typing import Dict, Set, Optional
+
 
 from .graphs import DepGraph
 from .ast_extraction import symbols_parser
@@ -9,13 +11,16 @@ from tree_sitter_language_pack import get_parser
 from . import trees
 from .filedeps import crawler
 from .filedeps import dep_builder
+from .ast_extraction.symbols_data import GenSymbol
 
 TEST_DIR = os.path.join(os.path.dirname(__file__), "test/tensorflow/tensorflow/cc")
-if __name__ == "__main__":
-    crawler = crawler.Crawler(TEST_DIR)
-    directory_tree = crawler.build_directory_tree()
-    source_dict = crawler.source_dict #structure is {".py": set(), ".js": set(), ...}
 
+
+if __name__ == "__main__":
+    crawlerObj = crawler.Crawler(TEST_DIR)
+    directory_tree = crawlerObj.build_directory_tree()
+    source_dict = crawlerObj.source_dict #structure is {".py": set(), ".js": set(), ...}
+    crawlerObj.normalize_source_paths()
     #debug
     #directory_tree.tree.traverse()
 
@@ -39,10 +44,16 @@ if __name__ == "__main__":
     numFiles = len(dep_builder_cpp.source_set)
     count = 0
     prevTime = time.time()
+
+    #Symbol table for global resolution
+    symbolTable: Dict[str, GenSymbol] = {}
+
     for file in dep_builder_cpp.source_set:
         print(f"Parsing: {file}")
         symParser = symbols_parser.SymbolParser("cpp")
-        with open(file, "r") as f:
+        #fully qualify file
+        file_full_path = os.path.join(TEST_DIR, file)
+        with open(file_full_path, "r") as f:
             code = f.read()
         # try:
         tree = astparser.parse(bytes(code, "utf8"))
@@ -51,16 +62,30 @@ if __name__ == "__main__":
         nameToSyms[file] = symParser
         print(f"Parsed {file} in {time.time()-prevTime:.2f} seconds")
         prevTime = time.time()
-        # except:
-        #     print(f"Failed to parse {file}")
-        #     count += 1
-        #     continue
+        
+        #add to symbol table
+        for func in symParser.functions_map:
+            #file is relative to project root
+            full_path = f"{file}.{func}"
+            symbolTable[full_path] = symParser.functions_map[func]
+        for cls in symParser.classes_map:
+            full_path = f"{file}.{cls}"
+            symbolTable[full_path] = symParser.classes_map[cls]
     print(f"Parsed all files in {time.time()-start:.2f} seconds")
     print(f"Failed to parse {count} / {numFiles} files")
     
-    for file, symParser in nameToSyms.items():
-        symParser.dependency_graph.visualize()
-        symParser.log_unresolved_imports()
-        input("Press Enter to continue...")
+    #print symbol table
+    print("All collected symbols")
+    for key in symbolTable:
+        print(f"{key}: {symbolTable[key].name} - {type(symbolTable[key])}")
+
+    #run through symbols again, for each dependent of a symbol, try to resolve
+    
+    # for file, symParser in nameToSyms.items():
+    #     symParser.dependency_graph.visualize()
+    #     symParser.log_unresolved_imports()
+    #     input("Press Enter to continue...")
+
+    
     #TODO: Attempt a global artbitrary-depth resolve - for now, nodes only connect to their same level (file to file, symbols  to symbols)
 
