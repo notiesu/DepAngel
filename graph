@@ -1,262 +1,56 @@
 digraph {
-	EinsumGetAxisFromLabel
-	kEllipsis -> EinsumGetAxisFromLabel
-	find -> EinsumGetAxisFromLabel
-	splits -> EinsumGetAxisFromLabel
-	subscripts -> EinsumGetAxisFromLabel
-	size -> EinsumGetAxisFromLabel
-	length -> EinsumGetAxisFromLabel
-	StrSplit -> EinsumGetAxisFromLabel
-	label -> EinsumGetAxisFromLabel
-	kEllipsis
-	find
-	splits
-	label
-	subscripts
-	size
-	length
-	StrSplit
-	EinsumGetBcastSubshape
-	find -> EinsumGetBcastSubshape
-	kEllipsis -> EinsumGetBcastSubshape
-	end -> EinsumGetBcastSubshape
-	subscripts -> EinsumGetBcastSubshape
-	start -> EinsumGetBcastSubshape
-	length -> EinsumGetBcastSubshape
-	make_tuple -> EinsumGetBcastSubshape
-	end
-	start
-	make_tuple
-	Slice1dHelper
-	scope -> Slice1dHelper
-	end -> Slice1dHelper
-	tensor -> Slice1dHelper
-	TensorShape -> Slice1dHelper
-	start -> Slice1dHelper
-	Const -> Slice1dHelper
-	Add -> Slice1dHelper
-	value_or -> Slice1dHelper
-	has_value -> Slice1dHelper
-	Shape -> Slice1dHelper
-	scope
-	value_or
-	TensorShape
-	Const
-	Add
-	tensor
-	has_value
-	Shape
-	EinsumGetReducedSubscripts
-	reduced_axes -> EinsumGetReducedSubscripts
-	scope -> EinsumGetReducedSubscripts
-	Gather -> EinsumGetReducedSubscripts
-	subscripts -> EinsumGetReducedSubscripts
-	make_tuple -> EinsumGetReducedSubscripts
-	s -> EinsumGetReducedSubscripts
-	reserve -> EinsumGetReducedSubscripts
-	reduced_dims -> EinsumGetReducedSubscripts
-	Add -> EinsumGetReducedSubscripts
-	copy_n -> EinsumGetReducedSubscripts
-	reduced_label_set -> EinsumGetReducedSubscripts
-	StrCat -> EinsumGetReducedSubscripts
-	input_shape -> EinsumGetReducedSubscripts
-	has_value -> EinsumGetReducedSubscripts
-	begin -> EinsumGetReducedSubscripts
-	Internal -> EinsumGetReducedSubscripts
-	UpdateStatus -> EinsumGetReducedSubscripts
-	reduced_subs -> EinsumGetReducedSubscripts
-	axis -> EinsumGetReducedSubscripts
-	i -> EinsumGetReducedSubscripts
-	end -> EinsumGetReducedSubscripts
-	reduced_dims_inputs -> EinsumGetReducedSubscripts
-	Size -> EinsumGetReducedSubscripts
-	string_view -> EinsumGetReducedSubscripts
-	size -> EinsumGetReducedSubscripts
-	reduced_axes_tensor -> EinsumGetReducedSubscripts
-	Const -> EinsumGetReducedSubscripts
-	push_back -> EinsumGetReducedSubscripts
-	flat -> EinsumGetReducedSubscripts
-	data -> EinsumGetReducedSubscripts
-	string -> EinsumGetReducedSubscripts
-	static_cast -> EinsumGetReducedSubscripts
-	reduced_axes
-	Gather
-	s
-	reserve
-	reduced_dims
-	copy_n
-	StrCat
-	reduced_label_set
-	input_shape
-	begin
-	Internal
-	UpdateStatus
-	static_cast
-	reduced_subs
-	axis
-	reduced_dims_inputs
-	Size
-	string_view
-	reduced_axes_tensor
-	push_back
-	flat
-	data
-	string
-	i
-	EinsumGradReducedHelper
-	reduced_axes -> EinsumGradReducedHelper
-	scope -> EinsumGradReducedHelper
-	input_subs -> EinsumGradReducedHelper
-	flat_hash_set -> EinsumGradReducedHelper
-	output_subs -> EinsumGradReducedHelper
-	Reshape -> EinsumGradReducedHelper
-	s -> EinsumGradReducedHelper
-	reduced_dims -> EinsumGradReducedHelper
-	StrCat -> EinsumGradReducedHelper
-	reduced_label_set -> EinsumGradReducedHelper
-	output_grad -> EinsumGradReducedHelper
-	input_shape -> EinsumGradReducedHelper
-	reduced_shape -> EinsumGradReducedHelper
-	begin -> EinsumGradReducedHelper
-	tie -> EinsumGradReducedHelper
-	reduced_subs -> EinsumGradReducedHelper
-	grad_shape_with_reduced_labels -> EinsumGradReducedHelper
-	end -> EinsumGradReducedHelper
-	broadcasted_grad -> EinsumGradReducedHelper
-	size -> EinsumGradReducedHelper
-	length -> EinsumGradReducedHelper
-	input_subs_without_reduced_labels -> EinsumGradReducedHelper
-	Const -> EinsumGradReducedHelper
-	push_back -> EinsumGradReducedHelper
-	c_linear_search -> EinsumGradReducedHelper
-	output_grad_shape -> EinsumGradReducedHelper
-	static_cast -> EinsumGradReducedHelper
-	input_subs
-	flat_hash_set
-	output_subs
-	Reshape
-	output_grad
-	reduced_shape
-	tie
-	grad_shape_with_reduced_labels
-	broadcasted_grad
-	input_subs_without_reduced_labels
-	c_linear_search
-	output_grad_shape
-	EinsumGradWrt
-	scope -> EinsumGradWrt
-	other_operand -> EinsumGradWrt
-	input_subs -> EinsumGradWrt
-	contains -> EinsumGradWrt
-	output_subs -> EinsumGradWrt
-	s -> EinsumGradWrt
-	x -> EinsumGradWrt
-	reduced_label_set -> EinsumGradWrt
-	StrCat -> EinsumGradWrt
-	output_grad -> EinsumGradWrt
-	input_shape -> EinsumGradWrt
-	begin -> EinsumGradWrt
-	left_subs -> EinsumGradWrt
-	grad_reduced -> EinsumGradWrt
-	empty -> EinsumGradWrt
-	end -> EinsumGradWrt
-	erase -> EinsumGradWrt
-	push_back -> EinsumGradWrt
-	other_subs -> EinsumGradWrt
-	other_operand
-	contains
-	x
-	grad_reduced
-	left_subs
-	empty
-	erase
-	other_subs
-	EinsumGrad
-	StrAppend -> EinsumGrad
-	equation -> EinsumGrad
-	scope -> EinsumGrad
-	grad -> EinsumGrad
-	x_shape -> EinsumGrad
-	num_inputs -> EinsumGrad
-	bx_end -> EinsumGrad
-	input_subs -> EinsumGrad
-	BroadcastGradientArgs -> EinsumGrad
-	bx_start -> EinsumGrad
-	subs -> EinsumGrad
-	y_subs -> EinsumGrad
-	kEllipsis -> EinsumGrad
-	output_subs -> EinsumGrad
-	r0 -> EinsumGrad
-	x -> EinsumGrad
-	InvalidArgument -> EinsumGrad
-	args -> EinsumGrad
-	input -> EinsumGrad
-	Add -> EinsumGrad
-	"node" -> EinsumGrad
-	by_start -> EinsumGrad
-	reduced_label_set -> EinsumGrad
-	StrCat -> EinsumGrad
-	input_shape -> EinsumGrad
-	equation_split -> EinsumGrad
-	begin -> EinsumGrad
-	by_end -> EinsumGrad
-	ReduceSum -> EinsumGrad
-	grad_x -> EinsumGrad
-	y -> EinsumGrad
-	tie -> EinsumGrad
-	grad_y -> EinsumGrad
-	status -> EinsumGrad
-	op -> EinsumGrad
-	EinsumGradReducedHelper -> EinsumGrad
-	empty -> EinsumGrad
-	Slice1dHelper -> EinsumGrad
-	end -> EinsumGrad
-	StrContains -> EinsumGrad
-	erase -> EinsumGrad
-	y_shape -> EinsumGrad
-	size -> EinsumGrad
-	grad_outputs -> EinsumGrad
-	grad_inputs -> EinsumGrad
-	GetNodeAttr -> EinsumGrad
-	Einsum -> EinsumGrad
-	push_back -> EinsumGrad
-	type -> EinsumGrad
-	x_subs -> EinsumGrad
-	r1 -> EinsumGrad
-	StrSplit -> EinsumGrad
-	attrs -> EinsumGrad
-	StrAppend
-	equation
-	grad
-	x_shape
-	num_inputs
-	bx_end
-	r1
-	BroadcastGradientArgs
-	subs
-	bx_start
-	y_subs
-	r0
-	InvalidArgument
-	args
-	input
-	"node"
-	by_start
-	by_end
-	ReduceSum
-	grad_x
-	y
-	grad_y
-	status
-	op
-	StrContains
-	y_shape
-	grad_outputs
-	grad_inputs
-	GetNodeAttr
-	Einsum
-	type
-	x_subs
-	equation_split
-	attrs
+	testPythonHasDenormals
+	tiny -> testPythonHasDenormals
+	assertEqual -> testPythonHasDenormals
+	dtype -> testPythonHasDenormals
+	self -> testPythonHasDenormals
+	np -> testPythonHasDenormals
+	finfo -> testPythonHasDenormals
+	tiny
+	assertEqual
+	dtype
+	self
+	np
+	finfo
+	_flushDenormalsTest
+	tiny -> _flushDenormalsTest
+	flush -> _flushDenormalsTest
+	constant_op -> _flushDenormalsTest
+	dtype -> _flushDenormalsTest
+	evaluate -> _flushDenormalsTest
+	self -> _flushDenormalsTest
+	assertAllEqual -> _flushDenormalsTest
+	zeros -> _flushDenormalsTest
+	machine -> _flushDenormalsTest
+	np -> _flushDenormalsTest
+	platform -> _flushDenormalsTest
+	constant -> _flushDenormalsTest
+	finfo -> _flushDenormalsTest
+	shape -> _flushDenormalsTest
+	testPythonHasDenormals -> _flushDenormalsTest
+	flush
+	constant_op
+	evaluate
+	assertAllEqual
+	zeros
+	machine
+	platform
+	constant
+	shape
+	testFlushDenormalsCPU
+	float64 -> testFlushDenormalsCPU
+	float32 -> testFlushDenormalsCPU
+	self -> testFlushDenormalsCPU
+	dtypes -> testFlushDenormalsCPU
+	_flushDenormalsTest -> testFlushDenormalsCPU
+	np -> testFlushDenormalsCPU
+	float64
+	float32
+	dtypes
+	testFlushDenormalsGPU
+	float32 -> testFlushDenormalsGPU
+	self -> testFlushDenormalsGPU
+	dtypes -> testFlushDenormalsGPU
+	_flushDenormalsTest -> testFlushDenormalsGPU
+	np -> testFlushDenormalsGPU
 }

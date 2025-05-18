@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Set, Dict
 
 #TODO: Implement scope resolution and variable dependencies. Could blow up code complexity though.
+#TODO: encode node data for feaatures
 @dataclass
 class GenSymbol:
     name: str = ""
@@ -12,6 +13,8 @@ class FunctionSymbol(GenSymbol):
     calls: Set[str] = field(default_factory=set)
     class_deps: Set[str] = field(default_factory=set)
     return_type: Optional[str] = None
+    #TODO: Add all below attributes to the ast parser
+    source_file: Optional[str] = None
 
 @dataclass
 class VariableSymbol(GenSymbol):
@@ -25,6 +28,8 @@ class ClassSymbol(GenSymbol):
     base_classes: Set[str] = field(default_factory=set)
     attributes: Set[str] = field(default_factory=set)
     init_args: Set[str] = field(default_factory=set)
+    source_file: Optional[str] = None
+
 
 
 
